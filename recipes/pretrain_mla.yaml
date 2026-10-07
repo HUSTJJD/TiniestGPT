@@ -1,0 +1,38 @@
+# MLA 配方：验证"低秩 KV 压缩"对显存/带宽的收益
+# 观察点：cli info 里的 kv/token 指标，与 tiny 配方对比
+model:
+  vocab_size: 2048
+  dim: 384
+  n_layers: 12
+  n_heads: 8
+  head_dim: 48
+  hidden_dim: 1024
+  max_seq_len: 1024
+
+  attn_type: mla
+  mla_latent_dim: 64      # KV 压缩维度（原为 n_kv_heads*head_dim=96）
+  mla_rope_dim: 32        # 解耦 RoPE 维度
+  rope_partial: 1.0
+
+  attn_window: -1
+  attn_sinks: 4
+  norm_type: rms
+  qk_norm: true
+  tie_embeddings: true
+
+data_dir: data/packed
+batch_size: 8
+seq_len: 512
+max_steps: 1500
+grad_accum_steps: 4
+log_every: 20
+save_every: 500
+
+optimizer: adamw
+lr: 3.0e-4
+weight_decay: 0.1
+lr_schedule: wsd
+warmup_steps: 100
+dtype: bf16
+out_dir: out/mla
+seed: 42

@@ -1,0 +1,90 @@
+[build-system]
+# 注意：这里刻意不列 wheel —— uv 在 Windows 上为 wheel 包生成的 console-script
+# trampoline 会因 "Failed to update Windows PE resources" 失败。
+# setuptools 自带 bdist_wheel，足够完成 editable 安装。
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tiniestgpt"
+version = "0.1.0"
+description = "A tiny-but-complete, state-of-the-art LLM full-stack learning project"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+# ---------------------------------------------------------------------------
+# 可选依赖
+#   serving : OpenAI 兼容 HTTP 服务
+#   dev     : 测试与绘图
+#   kernel  : Triton 高性能内核（仅 Linux；Windows 会自动回退到 PyTorch 参考实现）
+#             + ninja（torch 的 C++/CUDA JIT 扩展需要它；缺了会报
+#               "Ninja is required to load C++ extensions"）
+# ---------------------------------------------------------------------------
+[project.optional-dependencies]
+serving = ["fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2.0"]
+dev = ["pytest>=7.0", "matplotlib>=3.7"]
+kernel = ["triton>=3.0", "ninja>=1.11"]
+# vLLM 刻意**不**放进 extras：它会把 numpy 等基础依赖的版本约束带进主锁文件。
+# 需要对比时请在独立环境里安装，见 docs/07-vllm.md。
+all = [
+    "fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2.0",
+    "pytest>=7.0", "matplotlib>=3.7",
+    "safetensors>=0.4",        # HF 导出的首选权重格式（缺失时回退到 pytorch_model.bin）
+]
+
+# 说明：这里刻意**不**声明 [project.scripts]。
+# uv 在 Windows 上为 console script 生成 .exe trampoline 时，本机会稳定报
+#   Failed to update Windows PE resources ... (os error -2147024786)
+# （与杀毒软件扫描新生成的 exe 有关，非本项目可控）。
+# 因此统一使用模块方式调用：  uv run python -m tiniestgpt.cli <子命令>
+
+[tool.setuptools.packages.find]
+include = ["tiniestgpt*"]
+
+# ---------------------------------------------------------------------------
+# uv 配置：所有依赖由 uv 管理
+#
+# 关键：PyTorch 的 CUDA 构建**只在 PyTorch 自己的索引上发布**（PyPI 上的
+# Windows/Linux 默认 wheel 是 CPU 版）。因此必须显式声明 index + source，
+# 否则 uv 会按版本号优先装到 CPU 版 torch —— 这是最容易踩的坑。
+#
+#   CUDA 版本选择：
+#     cu128 → 适配绝大多数近两年的 NVIDIA 驱动（推荐，RTX 30/40 系均可）
+#     cu130 → Blackwell（RTX 50 系）
+# ---------------------------------------------------------------------------
+[tool.uv]
+# 复用系统已安装的 Python 3.14，避免重复下载解释器
+python-preference = "only-system"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+# explicit index：只有下面列出的包会从该索引拉取
+torch = { index = "pytorch-cu128" }
+# torch 的 CUDA 运行时依赖同样只存在于 PyTorch 索引上，必须一并声明
+nvidia-cuda-runtime-cu12 = { index = "pytorch-cu128" }
+nvidia-cudnn-cu12 = { index = "pytorch-cu128" }
+nvidia-cublas-cu12 = { index = "pytorch-cu128" }
+nvidia-cufft-cu12 = { index = "pytorch-cu128" }
+nvidia-curand-cu12 = { index = "pytorch-cu128" }
+nvidia-cusolver-cu12 = { index = "pytorch-cu128" }
+nvidia-cusparse-cu12 = { index = "pytorch-cu128" }
+nvidia-nccl-cu12 = { index = "pytorch-cu128" }
+nvidia-nvtx-cu12 = { index = "pytorch-cu128" }
+nvidia-nvjitlink-cu12 = { index = "pytorch-cu128" }
+nvidia-cuda-cccl-cu12 = { index = "pytorch-cu128" }
+nvidia-cuda-nvrtc-cu12 = { index = "pytorch-cu128" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

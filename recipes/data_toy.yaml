@@ -1,0 +1,47 @@
+# 离线玩具语料流水线（不需要联网，几分钟内跑完）
+out_dir: data
+source: toy
+n_docs: 4000
+seed: 0
+
+cleaning:
+  min_chars: 200
+  max_chars: 200000
+  min_words: 30
+  max_line_dup_ratio: 0.35
+  max_ngram_dup_ratio: 0.30
+  max_bullet_ratio: 0.60
+  max_url_count: 10
+  min_alpha_ratio: 0.55
+  max_symbol_ratio: 0.20
+  max_digit_ratio: 0.20
+  min_mean_word_len: 2.0
+  max_mean_word_len: 20.0
+  languages: [latin, cjk]
+  min_lang_ratio: 0.60
+  min_stopword_ratio: 0.0
+
+dedup_enabled: true
+dedup_threshold: 0.85
+dedup_num_perm: 64
+dedup_rows_per_band: 8
+
+quality_enabled: true
+quality:
+  mode: heuristic
+  heuristic_min_score: 0.35
+  keep_top_fraction: 1.0
+train_classifier: false
+
+tokenizer_path: data/tokenizer.json
+vocab_size: 2048
+force_retrain_tokenizer: false
+min_pair_freq: 2
+
+packing:
+  seq_len: 512
+  strategy: bfd
+  shuffle: true
+  seed: 0
+  drop_last: true
+  max_docs_per_pack: 32

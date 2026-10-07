@@ -1,0 +1,76 @@
+# 默认预训练配方：~25M 参数，单卡 3060 上数分钟可见 loss 下降
+#   python -m tiniestgpt.cli pretrain --config recipes/pretrain_tiny.yaml
+model:
+  vocab_size: 2048
+  dim: 384
+  n_layers: 12
+  n_heads: 8
+  n_kv_heads: 2          # GQA：KV 头数 8→2，显存/带宽降 4 倍
+  head_dim: 0
+  hidden_dim: 0          # 0 → 按 SwiGLU 经验公式自动推导
+  max_seq_len: 1024
+
+  norm_type: rms
+  pre_norm: true
+  post_norm: true        # Sandwich norm（Qwen3 / Gemma2）
+  post_norm_init_zero: false
+  qk_norm: true
+
+  rope_type: yarn
+  rope_theta: 10000.0
+  rope_scaling: 1.0
+  rope_original_max_len: 1024
+
+  attn_type: gqa
+  attn_backend: auto
+  attn_window: 512       # 滑动窗口
+  attn_sinks: 4          # Attention Sink
+  attn_softcap: 0.0
+
+  act_type: swiglu
+  dropout: 0.0
+
+  moe_enabled: false
+  tie_embeddings: true
+  depth_scaled_init: true
+  z_loss_weight: 0.0
+  layer_types: ""
+
+data_dir: data/packed
+batch_size: 8
+seq_len: 512
+doc_mask: false
+num_prefetch: 2
+
+max_steps: 2000
+grad_accum_steps: 4
+eval_every: 200
+eval_batches: 20
+log_every: 20
+save_every: 500
+
+optimizer: muon
+lr: 3.0e-4
+muon_lr: 0.02
+weight_decay: 0.1
+momentum: 0.95
+ns_steps: 6
+betas: [0.9, 0.95]
+grad_clip: 1.0
+
+lr_schedule: wsd
+warmup_steps: 100
+decay_fraction: 0.2
+decay_type: 1-sqrt
+
+dtype: bf16
+compile_model: false
+gradient_checkpointing: false
+distributed: none
+
+label_smoothing: 0.0
+z_loss_weight: 0.0
+moe_aux_weight: 0.01
+
+out_dir: out/tiny
+seed: 42

@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# 运行产物
+data/
+out/
+*.pt
+*.npz
+*.jsonl
+!recipes/*.yaml
+
+# uv / 脚本临时目录
+.tmp/
+.venv_old_pip/
+# 注意：uv.lock 应当提交，保证环境可复现
+
+# 日志 / 临时文件
+*.log
+.pip_*.log
+.DS_Store

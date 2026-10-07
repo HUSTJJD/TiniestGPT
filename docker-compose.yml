@@ -1,0 +1,38 @@
+# 一键起服务 + Prometheus 抓取指标
+#
+#   docker compose up -d --build
+#   curl http://localhost:8000/health
+#   curl http://localhost:8000/metrics      # Prometheus 文本指标
+#
+# 模型权重放在 ./out，挂载进容器后由 serve 命令加载。
+services:
+  tiniestgpt:
+    build: .
+    image: tiniestgpt:latest
+    container_name: tiniestgpt
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./out:/app/out            # 权重 / checkpoint
+      - ./data:/app/data          # 分词器与打包语料
+    environment:
+      - TINIESTGPT_FUSED_INT4=0   # 需要实测过的硬件才打开融合 INT4 内核
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # 可选：Prometheus 抓取 /metrics（默认每 5s 一次）
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: tiniestgpt-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - tiniestgpt

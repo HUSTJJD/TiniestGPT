@@ -26,7 +26,7 @@
 | 3 | **模型架构** | Pre/Post RMSNorm(Sandwich)、RMSNorm/QK-Norm、RoPE+YaRN+mRoPE、GQA/MQA/MLA、SwiGLU、滑动窗口 + Attention Sink、稀疏 MoE（共享专家 + 无辅助损失负载均衡）、混合线性注意力层、z-loss | `tiniestgpt/model/` |
 | 4 | **预训练** | AdamW / Muon / Sophia、WSD & 余弦调度、梯度裁剪 + NaN 守卫、bf16 混合精度、梯度检查点、DDP / FSDP、异步 checkpoint、MFU 统计 | `tiniestgpt/train/` |
 | 5 | **后训练** | SFT（打包 + loss mask）、DPO/IPO、GRPO（组相对策略优化，含 KL 与优势归一化）、知识蒸馏（logit / hidden-state） | `tiniestgpt/posttrain/` |
-| 6 | **推理系统（重点）** | PagedAttention、分块预填充、连续批处理调度、Prefix Caching、KV Cache 量化、Triton Flash 内核、投机解码、CUDA Graph、张量并行、OpenAI 兼容服务 | `tiniestgpt/inference/` |
+| 6 | **推理系统（重点）** | PagedAttention、分块预填充、连续批处理调度、Prefix Caching、KV Cache 量化、Triton 内核、投机解码、CUDA Graph、OpenAI 兼容服务（**与 vLLM 逐模块对照**） | `tiniestgpt/inference/` |
 | 7 | **量化** | INT8(W8A8 per-channel/per-token)、SmoothQuant、GPTQ(OBD/OBQ)、AWQ、NF4 + 双重量化、FP8(E4M3)、KV Cache INT8/FP8 | `tiniestgpt/inference/quantization/` |
 | 8 | **Agentic 框架** | 类型化工具协议（自动生成 JSON Schema）、ReAct / Plan-and-Execute / Reflexion、分层记忆（工作/摘要/向量/情景）、上下文压缩、沙箱执行、多智能体编排（Supervisor / Blackboard / Handoff）、全链路 Trace | `tiniestgpt/agent/` |
 
@@ -53,11 +53,31 @@ TiniestGPT/
 
 ---
 
-## 三、快速开始
+## 三、快速开始（依赖全部由 uv 管理）
 
 ```bash
-# 1) 安装
-pip install -e ".[all]"
+# Windows
+.\scripts\setup.ps1
+
+# Linux / macOS
+bash scripts/setup.sh
+```
+
+脚本会：创建 uv 虚拟环境 → 从 **PyTorch 官方索引**装 CUDA 版 torch
+→ 装 serving/dev 依赖并以 editable 方式安装本项目 → 跑 `scripts/verify_env.py` 自检。
+
+想手动执行就三步（注意必须带 `--extra all`，否则不会装 fastapi/pytest）：
+
+```bash
+uv venv --python 3.14
+uv sync --extra all          # 首次要下载约 2.6 GB 的 CUDA 版 torch，非交互终端下无进度条，请耐心等
+uv run python -m tiniestgpt.cli info
+```
+
+> ⚠️ **Windows 上的已知坑**：uv 为 console script 生成 `.exe` trampoline 时，
+> 若 `TEMP` 是 8.3 短名路径（如 `C:\Users\DAVIDS~1\AppData\Local\Temp`）会报
+> `Failed to update Windows PE resources`。`scripts/setup.ps1` 已内置规避
+> （把 TEMP 指向项目内 `.tmp`），手动执行时请先设置 `TEMP`/`TMP`。
 
 # 2) 生成离线玩具语料 → 训练 BPE → 清洗/去重/打分 → 打包（无需联网）
 python -m tiniestgpt.cli data --config recipes/data_toy.yaml
@@ -96,8 +116,80 @@ KV Cache → PagedAttention → 连续批处理 → Triton 内核 → 量化 →
 
 ---
 
-## 五、硬件
+## 五、学习文档
 
-- 最低：CPU + 8GB 内存（可跑通全链路，仅慢）。
-- 推荐：单张 ≥8GB 显存的 NVIDIA GPU（本项目在 RTX 3060 12GB 上开发验证）。
-- Triton 内核在 Linux 上可直接运行；Windows 下自动回退到 PyTorch 参考实现（数值等价，仅速度差异）。
+| 文档 | 内容 |
+|---|---|
+| [`docs/00-roadmap.md`](docs/00-roadmap.md) | 学习路线、每个阶段该做什么实验、延伸阅读 |
+| [`docs/01-data.md`](docs/01-data.md) | 清洗 / 去重 / 质量 / BPE / 打包的原理与调参 |
+| [`docs/02-architecture.md`](docs/02-architecture.md) | RMSNorm/RoPE/GQA/MLA/MoE/线性注意力为什么被发明 |
+| [`docs/03-training.md`](docs/03-training.md) | 优化器、调度、混合精度、分布式、MFU |
+| [`docs/04-posttraining.md`](docs/04-posttraining.md) | SFT / DPO / GRPO / 蒸馏 |
+| [`docs/05-inference.md`](docs/05-inference.md) | **推理与 AI Infra（重点）**，含排错清单 |
+| [`docs/06-agentic.md`](docs/06-agentic.md) | 工具协议、规划范式、记忆、多智能体 |
+| [`docs/07-vllm.md`](docs/07-vllm.md) | **与 vLLM 的模块对照**：从教学实现到生产实现差在哪 |
+
+## 六、验证状态
+
+环境：`uv` + Python 3.14 + `torch 2.11.0+cu128`，RTX 3060 12GB / sm_86。
+
+- `uv run python -m pytest tests`：**64 项测试全部通过**
+  （分词往返、KV Cache 一致性、PagedAttention 与稠密等价、
+  线性注意力并行/递推等价、投机解码分布一致性、量化误差、Agent 端到端）。
+- 端到端冒烟已跑通：`data → pretrain → generate → agent → serve → quantize`。
+- GPU 训练（bf16，20.2M 参数）：**~22,500 tok/s**，MFU 4%。
+- GPU 推理消融（`batch=8`，`benchmarks/inference_ablation.py`）：
+
+| 优化项 | 吞吐 | 相对 L0 |
+|---|---|---|
+| L0 无 KV Cache | 15 tok/s | 1.00× |
+| L1 稠密 KV Cache | 25 tok/s | 1.6× |
+| L2 PagedAttention + 连续批处理 | 146 tok/s | **9.4×** |
+| L3 + Prefix Caching（命中率 96%） | 140 tok/s | 9.0× |
+| L4 + KV Cache INT8 | 120 tok/s | 7.8× |
+| L5 + CUDA Graph | 142 tok/s | 9.2× |
+
+（L4/L6 在本项目里是 PyTorch 参考实现，未做内核融合，因此收益被部分抵消——
+这恰恰是"为什么生产系统必须自己写内核"的最好例证。）
+
+## 七、与 vLLM 的关系
+
+本项目**刻意重新实现**了 vLLM 的核心机制（而不是直接调库），
+因为目标是让每个机制的原理可见。但为了避免"闭门造车"，另配了三层对照：
+
+1. **`docs/07-vllm.md`** —— 逐模块对照表（本项目模块 ↔ vLLM 文件），
+   以及一张"vLLM 做了而我们为了可读性省略了什么"的清单
+   （张量并行、注意力后端矩阵、结构化输出、内核融合、Prometheus 指标 …）。
+2. **导出成 HF LLaMA 格式** —— 我们的架构与 LLaMA 同构，
+   导出后可直接被 transformers / vLLM / llama.cpp 加载：
+   ```bash
+   uv run python scripts/export_hf.py --checkpoint out/tiny/last.pt \
+       --tokenizer data/tokenizer.json --out-dir out/tiny_hf
+   ```
+   > 有损特性（post-norm / qk-norm / 部分 RoPE / 混合层）会被显式警告，
+   > 加 `--strict` 则直接报错——不静默导出一个数值不同的模型。
+3. **对比基准** —— 同一份权重分别跑我们的引擎与 vLLM，把差距量化出来：
+   ```bash
+   uv run python benchmarks/compare_vllm.py --model-dir out/tiny_hf \
+       --checkpoint out/tiny/last.pt --tokenizer data/tokenizer.json
+   ```
+   vLLM 未安装时会打印安装指引并优雅退出。
+   > vLLM 只支持 Linux，且会约束 numpy 等基础依赖版本，
+   > 因此**不**放进 extras；建议在独立环境里安装：
+   > `uv venv --python 3.12 .venv-vllm && uv pip install --python .venv-vllm vllm`
+
+## 八、硬件与依赖
+
+| 项 | 说明 |
+|---|---|
+| 包管理 | **uv**（`uv.lock` 已提交，保证可复现） |
+| Python | 3.14（`.python-version`） |
+| torch | **cu128**（CUDA 12.8，由 `pyproject.toml` 的 `[tool.uv.sources]` 指定；PyPI 默认是 CPU 版） |
+| 最低配置 | CPU + 8GB 内存（全链路可跑通，只是慢） |
+| 推荐配置 | ≥8GB 显存的 NVIDIA GPU（本项目在 RTX 3060 12GB / sm_86 上验证） |
+
+CUDA 版本切换：改 `pyproject.toml` 里 `[[tool.uv.index]]` 的 URL
+（`cu128` → `cu130` 适配 Blackwell / RTX 50 系），然后 `uv sync --extra all`。
+
+Triton 内核只支持 Linux：`uv sync --extra all --extra kernel`；
+Windows 会自动回退到 PyTorch 参考实现（数值等价，仅速度差异）。

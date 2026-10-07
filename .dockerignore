@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+.venv-vllm
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+out/
+data/
+.cuda_build
+*.nsys-rep
+*.ncu-rep
+.DS_Store
+.vscode
+.idea
