@@ -10,6 +10,7 @@
     │   ├── 03_gemm.cu       GEMM（朴素 vs 共享内存分块）
     │   ├── 04_softmax.cu    Softmax（朴素 vs online normalizer）
     │   ├── 05_transpose.cu  Bank Conflict 实验（32×32 转置 + padding）
+    │   ├── standalone_main.cu  脱离 PyTorch 的自检 main（-DTG_STANDALONE）
     │   └── bindings.cu      pybind11 导出
     ├── loader.py       # JIT 编译与降级
     └── cuda_ops.py     # Python 封装 + PyTorch 参考实现 + 微基准

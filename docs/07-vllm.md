@@ -30,17 +30,17 @@ vLLM 是当前事实上的开源推理引擎标准。本项目**刻意重新实�
 
 | 机制 | vLLM | 本项目 |
 |---|---|---|
-| **张量并行 / 流水线并行** | 完整支持（`vllm/distributed/`，含 Megatron 风格的 column/row parallel linear） | 未实现（单卡） |
+| **张量并行 / 流水线并行** | 完整支持（`vllm/distributed/`，含 Megatron 风格的 column/row parallel linear） | 训练侧已实现（`train/parallel/{tp,pp}.py`，含模型手术与 1F1B）；**推理引擎仍是单卡** |
 | **Chunked prefill 的调度细节** | 长 prompt 与 decode 混在同一 batch，按 token 预算切分 | 已实现预算切分，但 prefill 与 decode **分两次前向** |
 | **注意力后端矩阵** | FlashAttention / FlashInfer / Triton / FlexAttention / ROCm，按硬件自动选 | SDPA + 自写 Triton decode 内核 |
 | **CUDA Graph 覆盖范围** | 覆盖 prefill 与 decode，按 batch 分桶，含 attention 的 persistent buffer | 仅 decode，按 (batch, 长度档位) 分桶 |
-| **前缀缓存淘汰** | LRU，按块引用计数与哈希链管理 | 有哈希复用，无淘汰策略 |
-| **抢占策略** | recompute + swap（CPU 交换空间）双策略 | 仅 recompute |
+| **前缀缓存淘汰** | LRU，按块引用计数与哈希链管理 | 已支持：Radix 前缀树 + LRU 淘汰（`inference/radix_cache.py`，`prefix_cache_impl="radix"`） |
+| **抢占策略** | recompute + swap（CPU 交换空间）双策略 | 两种都有（`preemption_mode="swap"` + `inference/swap.py`） |
 | **多 LoRA / 多模型** | 支持 | 不支持 |
-| **结构化输出 / 语法约束解码** | `vllm/v1/structured_output/`，支持 JSON Schema / 正则 | 未实现（采样层留了接口） |
-| **指标与可观测** | Prometheus 全套（TTFT / TPOT / 排队长度 / 缓存命中率） | `engine.stats()` 基础指标 |
+| **结构化输出 / 语法约束解码** | `vllm/v1/structured_output/`，支持 JSON Schema / 正则 | 已实现 JSON 语法级约束解码（`inference/structured.py`），Schema 校验为子集 |
+| **指标与可观测** | Prometheus 全套（TTFT / TPOT / 排队长度 / 缓存命中率） | 已有 Prometheus 文本端点 `/metrics`（`inference/metrics.py`） |
 | **sleep / wake、权重在线更新** | 支持 | 不支持 |
-| **量化内核** | Marlin / Machete / CUTLASS，dequant 与 GEMM 融合 | dequant 与 GEMM 分离（参考实现） |
+| **量化内核** | Marlin / Machete / CUTLASS，dequant 与 GEMM 融合 | 已有 Triton 融合 INT4 GEMM（可选开启，`kernels/int4_gemm.py`）；默认仍是分离版 |
 
 ## 3. 本项目比 vLLM"更适合学习"的地方
 

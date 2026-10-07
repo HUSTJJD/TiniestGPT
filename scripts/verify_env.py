@@ -41,6 +41,22 @@ def main() -> int:
     except Exception as exc:  # pragma: no cover
         print(f"kernels     : 检查失败 ({exc})")
 
+    # 手写 CUDA 内核：缺 nvcc / ninja / MSVC 任一都会优雅降级，这里给出原因
+    try:
+        from tiniestgpt.kernels import cuda_ops as ck
+
+        st = ck.status()
+        print(f"cuda kernels: {'可用' if st['extension'] else '不可用（自动回退 PyTorch 实现）'}"
+              f"  [device={st['cuda_device']}, nvcc={st['nvcc']}]")
+        if not st["extension"] and st["error"]:
+            lines = st["error"].splitlines()
+            # 编译日志里真正有用的一般是带 "error" 的那行，而不是 nvcc 命令行
+            reason = next((l for l in lines if "error" in l.lower()), lines[0])
+            print(f"  原因      : {reason[:160]}")
+            print("  独立自检  : python scripts/verify_cuda_kernels.py  （不需要 torch 头文件）")
+    except Exception as exc:  # pragma: no cover
+        print(f"cuda kernels: 检查失败 ({exc})")
+
     try:
         from tiniestgpt.model.factory import build_model
 

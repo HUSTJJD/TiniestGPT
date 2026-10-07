@@ -37,6 +37,7 @@ all = [
     "fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2.0",
     "pytest>=7.0", "matplotlib>=3.7",
     "safetensors>=0.4",        # HF 导出的首选权重格式（缺失时回退到 pytorch_model.bin）
+    "ninja>=1.11",             # CUDA/C++ JIT 扩展的构建器（手写 CUDA 内核需要）
 ]
 
 # 说明：这里刻意**不**声明 [project.scripts]。

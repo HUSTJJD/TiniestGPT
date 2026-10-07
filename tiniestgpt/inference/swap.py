@@ -16,7 +16,7 @@ vLLM 的抢占有两种策略：
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import List
 
 import torch
 

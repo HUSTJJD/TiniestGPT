@@ -29,6 +29,9 @@
 | 6 | **推理系统（重点）** | PagedAttention、分块预填充、连续批处理调度、Prefix Caching、KV Cache 量化、Triton 内核、投机解码、CUDA Graph、OpenAI 兼容服务（**与 vLLM 逐模块对照**） | `tiniestgpt/inference/` |
 | 7 | **量化** | INT8(W8A8 per-channel/per-token)、SmoothQuant、GPTQ(OBD/OBQ)、AWQ、NF4 + 双重量化、FP8(E4M3)、KV Cache INT8/FP8 | `tiniestgpt/inference/quantization/` |
 | 8 | **Agentic 框架** | 类型化工具协议（自动生成 JSON Schema）、ReAct / Plan-and-Execute / Reflexion、分层记忆（工作/摘要/向量/情景）、上下文压缩、沙箱执行、多智能体编排（Supervisor / Blackboard / Handoff）、全链路 Trace | `tiniestgpt/agent/` |
+| 9 | **CUDA 内核** | 手写 `.cu`：向量加法、Reduce 三连（原子加→共享内存→warp shuffle）、GEMM（朴素 vs 共享内存分块）、Softmax（朴素 vs online normalizer）、转置的 Bank Conflict 实验；JIT 编译 + 参考实现 + 微基准 | `tiniestgpt/kernels/` |
+| 10 | **分布式并行** | 显存账本、张量并行（Column/Row 切分 + 模型手术）、序列并行、流水线并行（1F1B + 气泡分析）、自研 ZeRO-1/2/3；支持**单机模拟多卡** | `tiniestgpt/train/parallel/` + `common/memory_ledger.py` |
+| 11 | **服务化与可观测** | 六项指标基准 + 回归门禁、Prometheus `/metrics`、结构化输出（约束解码）、Radix 前缀缓存、KV Swap/CPU offload、Prefill/Decode 解耦实验、Docker 部署 | `tiniestgpt/inference/{metrics,structured,radix_cache,swap}.py` |
 
 ---
 
@@ -38,17 +41,28 @@
 TiniestGPT/
 ├── docs/                       # 学习文档（每个环节一篇，含原理 + 论文索引 + 代码对照）
 ├── tiniestgpt/
-│   ├── common/                 # 配置、日志、随机种子、Profiler、Registry
+│   ├── common/                 # 配置、日志、随机种子、Profiler、Registry、显存账本
 │   ├── data/                   # 清洗 → 去重 → 打分 → 分词 → 打包 → 加载
 │   ├── model/                  # 前沿小模型架构
-│   ├── train/                  # 预训练工程
+│   ├── kernels/                # 手写 CUDA 内核（csrc/*.cu + JIT 加载 + 参考实现）
+│   ├── train/
+│   │   ├── ...                 # 预训练工程（优化器 / 调度 / 混合精度 / DDP+FSDP）
+│   │   └── parallel/           # TP / SP / PP / ZeRO + 单机模拟多卡
 │   ├── posttrain/              # SFT / DPO / GRPO / 蒸馏
 │   ├── inference/              # 推理引擎 + AI Infra（重点）
+│   │   ├── scheduler.py        # 连续批处理 / 分块预填充 / 前缀缓存 / 抢占
+│   │   ├── radix_cache.py      # Radix 前缀树 + LRU 淘汰
+│   │   ├── swap.py             # KV Cache 的 CPU 交换空间
+│   │   ├── structured.py       # 结构化输出（约束解码）
+│   │   ├── metrics.py          # Prometheus 指标
+│   │   └── kernels/            # Triton / FlashAttention / INT4 融合 GEMM
 │   └── agent/                  # Agentic 运行时
 ├── recipes/                    # 各规模/各阶段的 YAML 配方
-├── scripts/                    # 便捷入口
+├── scripts/                    # 便捷入口（setup / 环境自检 / CUDA 自检 / 剖析 / torchrun）
+├── deploy/                     # Prometheus 抓取配置
+├── Dockerfile / docker-compose.yml
 ├── tests/                      # 数值一致性 + 冒烟测试
-└── benchmarks/                 # 吞吐/延迟/显存基准
+└── benchmarks/                 # 吞吐/延迟/显存基准（含服务化基准与回归门禁）
 ```
 
 ---
@@ -97,6 +111,19 @@ python -m tiniestgpt.cli agent --backend local --task "计算 2**10 + 3*(4+5) �
 
 # 7) 基准：把推理每一项优化逐个打开，看吞吐变化
 python benchmarks/inference_ablation.py --checkpoint out/tiny/last.pt
+
+# 8) CUDA 内核自检（脱离 PyTorch 编译，最稳）与基准
+python scripts/verify_cuda_kernels.py
+python benchmarks/cuda_kernels.py
+
+# 9) 服务化基准（六项指标 + 回归门禁）
+python benchmarks/serving_bench.py --num-requests 32 --concurrency 8
+
+# 10) 显存账本 / 分布式并行（无需多卡：单机模拟）
+uv run python -c "from tiniestgpt.common.memory_ledger import *; \
+print(format_report(estimate_training_memory(ModelShape(n_params=7_000_000_000, n_layers=32, \
+dim=4096, hidden_dim=11008, n_heads=32, n_kv_heads=32, head_dim=128, seq_len=2048, batch_size=8), \
+'adamw', world_size=8, zero_stage=3)))"
 ```
 
 ---
@@ -113,6 +140,14 @@ python benchmarks/inference_ablation.py --checkpoint out/tiny/last.pt
 KV Cache → PagedAttention → 连续批处理 → Triton 内核 → 量化 → 投机解码 → CUDA Graph，
 每步记录 tokens/s 与 p99 延迟。
 **阶段 6 · Agent**：从零写工具、换 Planner、观察上下文压缩与多智能体编排。
+**阶段 7 · CUDA 内核**（`docs/08-cuda.md`）：先跑 `scripts/verify_cuda_kernels.py`
+看内核数值自检，再按 `01→05` 顺序读 `kernels/csrc/`，用 `benchmarks/cuda_kernels.py`
+把"每一步优化省在哪"量化出来；最后用 Nsight 看 trace。
+**阶段 8 · 分布式并行**（`docs/09-parallel.md`）：先用 `common/memory_ledger.py` 算账，
+再用 `train/parallel/` 的**单机模拟模式**验证 TP/PP/ZeRO 的数学正确性，
+最后 `scripts/train_torchrun.sh` 上真多卡。
+**阶段 9 · 服务化**（`docs/10-serving.md`）：`benchmarks/serving_bench.py` 出六项指标 →
+接 Prometheus `/metrics` → 开结构化输出 → 用决策树定位瓶颈。
 
 ---
 
@@ -128,14 +163,22 @@ KV Cache → PagedAttention → 连续批处理 → Triton 内核 → 量化 →
 | [`docs/05-inference.md`](docs/05-inference.md) | **推理与 AI Infra（重点）**，含排错清单 |
 | [`docs/06-agentic.md`](docs/06-agentic.md) | 工具协议、规划范式、记忆、多智能体 |
 | [`docs/07-vllm.md`](docs/07-vllm.md) | **与 vLLM 的模块对照**：从教学实现到生产实现差在哪 |
+| [`docs/08-cuda.md`](docs/08-cuda.md) | **CUDA 编程与算子优化**：GPU 架构、存储层次、5 个 kernel 实验、Nsight 工具链 |
+| [`docs/09-parallel.md`](docs/09-parallel.md) | **分布式训练**：显存账本、ZeRO、TP / SP / PP、3D 并行怎么配 |
+| [`docs/10-serving.md`](docs/10-serving.md) | **服务化与部署**：六项指标基准、Prometheus、结构化输出、PD 解耦、Docker |
 
 ## 六、验证状态
 
 环境：`uv` + Python 3.14 + `torch 2.11.0+cu128`，RTX 3060 12GB / sm_86。
 
-- `uv run python -m pytest tests`：**64 项测试全部通过**
+- `uv run python -m pytest tests`：**148 项测试，本机 130 通过 / 18 自动跳过**
   （分词往返、KV Cache 一致性、PagedAttention 与稠密等价、
-  线性注意力并行/递推等价、投机解码分布一致性、量化误差、Agent 端到端）。
+  线性注意力并行/递推等价、投机解码分布一致性、量化误差、Agent 端到端、
+  **TP/PP/ZeRO 与单卡等价**、**显存账本公式**、**Radix/swap/结构化输出**、**FlashAttention**）。
+  跳过的 18 项需要 Triton（仅 Linux）或可用的 CUDA JIT 环境。
+- **CUDA 内核自检**（`scripts/verify_cuda_kernels.py`，RTX 3060 / sm_86）：
+  vector_add / reduce v0-v2 / gemm naive+tiled / softmax naive+online / transpose naive+padded
+  **10/10 PASS**。
 - 端到端冒烟已跑通：`data → pretrain → generate → agent → serve → quantize`。
 - GPU 训练（bf16，20.2M 参数）：**~22,500 tok/s**，MFU 4%。
 - GPU 推理消融（`batch=8`，`benchmarks/inference_ablation.py`）：
@@ -187,6 +230,7 @@ KV Cache → PagedAttention → 连续批处理 → Triton 内核 → 量化 →
 | torch | **cu128**（CUDA 12.8，由 `pyproject.toml` 的 `[tool.uv.sources]` 指定；PyPI 默认是 CPU 版） |
 | 最低配置 | CPU + 8GB 内存（全链路可跑通，只是慢） |
 | 推荐配置 | ≥8GB 显存的 NVIDIA GPU（本项目在 RTX 3060 12GB / sm_86 上验证） |
+| **手写 CUDA 内核** | 额外需要 **CUDA Toolkit（nvcc）** + `ninja`（`uv sync --extra kernel`）+ Windows 上的 MSVC；缺一会自动回退到 PyTorch 参考实现，详见 `docs/08-cuda.md` 第 6 节 |
 
 CUDA 版本切换：改 `pyproject.toml` 里 `[[tool.uv.index]]` 的 URL
 （`cu128` → `cu130` 适配 Blackwell / RTX 50 系），然后 `uv sync --extra all`。
