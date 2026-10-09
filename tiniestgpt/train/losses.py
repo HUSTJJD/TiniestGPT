@@ -16,7 +16,35 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
-__all__ = ["language_modeling_loss", "z_loss", "perplexity"]
+__all__ = ["language_modeling_loss", "z_loss", "perplexity", "mtp_loss"]
+
+
+def mtp_loss(mtp_logits: list, labels: torch.Tensor, weight: float = 0.1,
+             ignore_index: int = -100) -> Dict[str, torch.Tensor]:
+    """MTP（多 token 预测）的辅助损失。
+
+    ``labels[t] = x_{t+1}``，因此第 k 个 MTP 头（k 从 0 开始，预测 ``x_{t+2+k}``）
+    在位置 t 的目标是 ``labels[t + k + 1]``::
+
+        loss_k = CE(mtp_logits[k][:, :-k-1], labels[:, k+1:])
+
+    它**不影响推理时的主 logits**——MTP 头只在训练中提供额外的学习信号，
+    推理时它们改行当推测解码的草稿器。
+    """
+    if not mtp_logits or weight <= 0:
+        return {"mtp": labels.new_zeros(()) if hasattr(labels, "new_zeros")
+                else torch.zeros(())}
+    total = None
+    for k, lg in enumerate(mtp_logits):
+        T = lg.shape[1]
+        if T <= k + 1:
+            continue
+        ce = F.cross_entropy(lg[:, :-(k + 1)].float().reshape(-1, lg.shape[-1]),
+                             labels[:, k + 1:].reshape(-1), ignore_index=ignore_index)
+        total = ce if total is None else total + ce
+    if total is None:
+        return {"mtp": torch.zeros((), device=labels.device)}
+    return {"mtp": weight * total}
 
 
 def z_loss(logits: torch.Tensor, weight: float = 1e-4) -> torch.Tensor:

@@ -48,6 +48,11 @@ class LinearAttention(nn.Module):
     def gamma(self) -> torch.Tensor:
         return torch.sigmoid(self.log_decay)          # [H]
 
+    @property
+    def state_shape(self) -> tuple:
+        """Retention 的递归状态：每个 head 一个 ``D×D`` 矩阵（与上下文长度无关）。"""
+        return (self.n_heads, self.head_dim, self.head_dim)
+
     # ------------------------------------------------------------------ #
     def forward(self, x, positions=None, rope=None, cache=None,
                 attn_mask=None, is_causal=True, layer_type="linear") -> torch.Tensor:

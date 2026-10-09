@@ -159,6 +159,36 @@ def bench_speculative(model, tok, prompts: List[str], gen_len: int,
     return n / (time.time() - t0)
 
 
+@torch.no_grad()
+def bench_mtp_spec(model, tok, prompts: List[str], gen_len: int,
+                   device: torch.device, dtype: torch.dtype):
+    """L7：MTP 自草稿投机解码——**不需要独立的 draft 模型**。
+
+    同时报告「平均接受长度 τ」：τ 必须 > 1 才有收益，
+    否则多出来的验证前向反而更慢。这是判断投机解码是否值得的唯一硬指标。
+    """
+    from tiniestgpt.inference.mtp_spec import MTPSpecDecoder
+
+    dev = torch.device(device)
+    dec = MTPSpecDecoder(model, tok, device=dev, dtype=dtype)
+    if dev.type == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.time()
+    n, rounds, accepted, bonus = 0, 0, 0, 0
+    for p in prompts:
+        r = dec.generate(tok.encode(p), SamplingParams(temperature=0.0, max_tokens=gen_len),
+                         max_new_tokens=gen_len, seed=0)
+        n += len(r["output_ids"])
+        rounds += r["stats"].rounds
+        accepted += r["stats"].accepted_tokens
+        bonus += r["stats"].bonus_tokens
+    if dev.type == "cuda":
+        torch.cuda.synchronize()
+    tps = n / (time.time() - t0)
+    tau = (accepted + bonus) / max(rounds, 1)
+    return tps, f"τ={tau:.2f} tok/轮（>1 才有收益）"
+
+
 # --------------------------------------------------------------------------- #
 def main() -> None:
     _force_utf8_stdio()
@@ -222,9 +252,20 @@ def main() -> None:
 
     try:
         tps = bench_speculative(model, tok, prompt_texts[:2], args.gen_len, device, dtype)
-        add("L6 投机解码（γ=4）", tps)
+        add("L6 投机解码（外挂 draft，γ=4）", tps)
     except Exception as exc:
-        add("L6 投机解码（γ=4）", float("nan"), f"跳过: {exc}")
+        add("L6 投机解码（外挂 draft，γ=4）", float("nan"), f"跳过: {exc}")
+
+    # L7：MTP 自草稿（不需要独立 draft 模型）——2026 主流做法
+    if getattr(model.cfg, "mtp_enabled", False):
+        try:
+            tps, extra = bench_mtp_spec(model, tok, prompt_texts[:2], args.gen_len, device, dtype)
+            add("L7 MTP 自草稿投机解码", tps, extra)
+        except Exception as exc:
+            add("L7 MTP 自草稿投机解码", float("nan"), f"跳过: {exc}")
+    else:
+        add("L7 MTP 自草稿投机解码", float("nan"),
+            "跳过: 模型未启用 MTP（ModelConfig.mtp_enabled=True）")
 
     base = rows[0][1]
     print("\n" + "=" * 78)

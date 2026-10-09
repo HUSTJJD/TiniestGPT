@@ -73,12 +73,28 @@ class ModelConfig:
     z_loss_weight: float = 0.0      # z-loss：压住 logits 的 log-sum-exp 漂移
 
     # ---------------- 层类型 ----------------
-    # 逗号分隔：full | window | linear。留空 = 全部 full。
+    # 逗号分隔：full | window | linear | gdn | mamba2。留空 = 全部 full。
     # 例："window,window,full" 会循环应用到各层（滑动窗口与全注意力交替，兼顾效率与长程）。
+    #     "gdn,gdn,gdn,full" 是 Qwen3.6 式的 3:1 混合（线性记忆 + 周期全局校正）。
     layer_types: str = ""
+
+    # ---------------- 线性 / SSM 序列混合器（2026） ----------------
+    # layer_types 里出现 "linear" 时使用哪种线性注意力：
+    #   retention | gdn(Gated DeltaNet, Qwen3.6/Kimi Linear) | mamba2(SSD, Nemotron/Falcon)
+    seq_mixer: str = "retention"
+    gdn_chunk_size: int = 64        # GDN 的分块大小；<=0 走朴素逐步递推（参考实现）
+    gdn_conv_kernel: int = 0        # >0 时对 q/k/v 加深度可分离卷积（Qwen3.6 的做法）
+    ssm_state_size: int = 32        # Mamba-2/SSD 的状态维度 N
+    ssm_conv_kernel: int = 4        # Mamba-2 的短卷积宽度
+    ssm_n_heads: int = 0            # 0 → 用 n_heads
+    ssm_chunk_size: int = 64        # SSD 的分块大小
 
     # ---------------- 训练相关 ----------------
     gradient_checkpointing: bool = False
+
+    # ---------------- MTP 多 token 预测（2026 标配） ----------------
+    mtp_enabled: bool = False
+    mtp_n_predict: int = 1          # 额外预测几个未来 token（DeepSeek 用 1，MiniMax 用 3）
 
     # ------------------------------------------------------------------ #
     def __post_init__(self) -> None:
@@ -119,12 +135,16 @@ class ModelConfig:
         types = [t.strip() for t in self.layer_types.split(",") if t.strip()]
         return [types[i % len(types)] for i in range(self.n_layers)]
 
+    _LAYER_TYPES = ("full", "window", "linear", "gdn", "mamba2")
+
     def validate(self) -> None:
         for t in set(self.layer_type_list()):
-            if t not in ("full", "window", "linear"):
-                raise ValueError(f"未知层类型: {t}（可选 full/window/linear）")
+            if t not in self._LAYER_TYPES:
+                raise ValueError(f"未知层类型: {t}（可选 {'/'.join(self._LAYER_TYPES)}）")
         if self.attn_type not in ("gqa", "mha", "mqa", "mla"):
             raise ValueError(f"未知注意力类型: {self.attn_type}")
+        if self.seq_mixer not in ("retention", "gdn", "mamba2"):
+            raise ValueError(f"未知线性混合器: {self.seq_mixer}（可选 retention/gdn/mamba2）")
 
 
 # --------------------------------------------------------------------------- #
@@ -159,4 +179,12 @@ PRESETS = {
     # 投机解码用的 draft 模型（层数少、头数少）
     "draft": _preset(dim=192, n_layers=4, n_heads=6, n_kv_heads=2, hidden_dim=512,
                      vocab_size=4096, attn_window=512),
+    # 2026 混合架构：3 层 Gated DeltaNet + 1 层 Full Attention（Qwen3.6 式）
+    "gdn_hybrid": _preset(dim=384, n_layers=12, n_heads=8, n_kv_heads=2,
+                          vocab_size=4096, layer_types="gdn,gdn,gdn,full",
+                          gdn_chunk_size=64),
+    # 2026 混合架构：Mamba-2(SSD) 与 Full Attention 交替（Nemotron 3 Ultra 式）
+    "mamba_hybrid": _preset(dim=384, n_layers=12, n_heads=8, n_kv_heads=2,
+                            vocab_size=4096, layer_types="mamba2,mamba2,mamba2,full",
+                            ssm_state_size=32),
 }

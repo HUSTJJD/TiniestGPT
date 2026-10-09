@@ -9,7 +9,8 @@ from pathlib import Path
 
 __all__ = ["main"]
 
-_SUBCOMMANDS = ("data", "datasets", "pretrain", "generate", "serve", "agent", "quantize", "bench", "info")
+_SUBCOMMANDS = ("data", "datasets", "pretrain", "generate", "serve", "agent",
+                "quantize", "bench", "eval", "info")
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -237,6 +238,41 @@ def main(argv=None) -> int:
         out = a.out or a.checkpoint.replace(".pt", f"_int{a.bits}.pt")
         torch.save({"model": model.state_dict(), "config": vars(model.cfg)}, out)
         print(f"[quantize] saved -> {out}")
+        return 0
+
+    # ---------------------------------------------------------------- eval
+    if cmd == "eval":
+        p = argparse.ArgumentParser("eval")
+        p.add_argument("--checkpoint", type=str, default=None)
+        p.add_argument("--preset", type=str, default="tiny")
+        p.add_argument("--tokenizer", type=str, default="data/tokenizer.json")
+        p.add_argument("--tasks", nargs="*", default=None, help="留空 = 全部内置任务")
+        p.add_argument("--n-examples", type=int, default=32)
+        p.add_argument("--seed", type=int, default=0)
+        p.add_argument("--max-new-tokens", type=int, default=32)
+        p.add_argument("--device", type=str, default="auto")
+        p.add_argument("--no-cache", action="store_true")
+        p.add_argument("--json-out", type=str, default=None, help="把结果写成 json（供门禁使用）")
+        a = p.parse_args(rest)
+
+        from .data.tokenizer import Tokenizer
+        from .eval import EvalConfig, available_tasks, evaluate
+        from .model.factory import build_model, load_model
+        from pathlib import Path as _P
+
+        tok = Tokenizer.load(a.tokenizer)
+        model = load_model(a.checkpoint, map_location="cpu") if a.checkpoint and _P(a.checkpoint).exists() \
+            else build_model(a.preset)
+        cfg = EvalConfig(tasks=a.tasks or available_tasks(), n_examples=a.n_examples,
+                         seed=a.seed, max_new_tokens=a.max_new_tokens,
+                         device=a.device, use_cache=not a.no_cache)
+        rep = evaluate(model, tok, cfg)
+        print("\n" + rep.table())
+        print("\n--- 样本 ---\n" + rep.samples())
+        if a.json_out:
+            _P(a.json_out).write_text(json.dumps(rep.as_dict(), ensure_ascii=False, indent=2),
+                                      encoding="utf-8")
+            print(f"\n[eval] 结果已写入 {a.json_out}")
         return 0
 
     # ---------------------------------------------------------------- bench

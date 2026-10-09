@@ -1,0 +1,71 @@
+# 2026 混合架构：3 层 Gated DeltaNet + 1 层 Full Attention（Qwen3.6 式）
+#   python -m tiniestgpt.cli pretrain --config recipes/pretrain_gdn_hybrid.yaml
+#
+# 为什么这么配：
+#   * GDN 层把历史压进固定状态 → decode 与上下文长度无关、不需要 KV Cache；
+#   * 但固定状态做不了精确检索，所以每 4 层插一层 Full Attention 做"全局校正"；
+#   * 开着 QK-Clip（MuonClip）：GDN 的门控让 logit 更容易冲高，clip 能挡住 loss spike。
+# 对照实验：把 layer_types 改成 "" 就退化成纯 attention，看 loss / 显存 / 吞吐的差异。
+model:
+  vocab_size: 2048
+  dim: 384
+  n_layers: 12
+  n_heads: 8
+  n_kv_heads: 2
+  max_seq_len: 1024
+
+  norm_type: rms
+  pre_norm: true
+  post_norm: true
+  qk_norm: true          # GDN 依赖 q/k 归一化稳定 delta rule
+
+  attn_type: gqa
+  attn_backend: auto
+  attn_window: -1        # Full 层用全注意力；GDN 层不受此参数影响
+  attn_sinks: 4
+
+  act_type: swiglu
+
+  # ---- 2026 关键开关 ----
+  layer_types: "gdn,gdn,gdn,full"
+  gdn_chunk_size: 64     # 分块大小：块内重新开始衰减连乘 → 长序列不下溢
+  gdn_conv_kernel: 0     # >0 时对 q/k/v 加深度可分离短卷积（更接近 Qwen3.6）
+
+  tie_embeddings: true
+  depth_scaled_init: true
+
+data_dir: data/packed
+batch_size: 8
+seq_len: 512
+max_steps: 2000
+grad_accum_steps: 4
+eval_every: 200
+eval_batches: 20
+log_every: 20
+save_every: 500
+
+optimizer: muon           # Muon + QK-Clip 是 Kimi K2 的"零 loss spike"组合
+lr: 3.0e-4
+muon_lr: 0.02
+weight_decay: 0.1
+grad_clip: 1.0
+
+# ---- MuonClip / QK-Clip ----
+qk_clip_tau: 100.0        # 单 head 的 attention logit 上限
+qk_clip_every: 50
+qk_clip_alpha: 0.5        # Q/K 各担 sqrt 比例的缩放
+
+lr_schedule: wsd
+warmup_steps: 100
+decay_fraction: 0.2
+decay_type: 1-sqrt
+
+dtype: bf16
+compile_model: false
+gradient_checkpointing: false
+
+label_smoothing: 0.0
+moe_aux_weight: 0.01
+
+out_dir: out/gdn_hybrid
+seed: 42

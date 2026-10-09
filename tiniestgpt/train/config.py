@@ -56,6 +56,14 @@ class TrainConfig:
     label_smoothing: float = 0.0
     z_loss_weight: float = 0.0
     moe_aux_weight: float = 0.01
+    mtp_loss_weight: float = 0.0       # MTP 辅助损失权重（需 model.mtp_enabled=True）
+
+    # ---------------- 训练稳定化（2026） ----------------
+    # MuonClip / QK-Clip：约束 attention logit 的最大值，防止 softmax 饱和与 loss spike。
+    # Kimi K2 靠它在 15.5T token 上做到零 spike。0 = 关闭。
+    qk_clip_tau: float = 0.0
+    qk_clip_every: int = 50           # 每多少步做一次 clip
+    qk_clip_alpha: float = 0.5        # Q/K 各承担的缩放比例（0.5 = 各担 sqrt）
 
     # ---------------- 分布式 ----------------
     distributed: str = "none"          # none | ddp | fsdp

@@ -25,7 +25,7 @@ from ..model.config import ModelConfig
 from ..model.factory import build_model
 from .checkpoint import find_latest, load_checkpoint, save_checkpoint
 from .distributed import init_distributed, reduce_metrics, wrap_model
-from .losses import language_modeling_loss, perplexity
+from .losses import language_modeling_loss, mtp_loss, perplexity
 from .lr_sched import build_scheduler
 from .optim import build_optimizer
 
@@ -77,6 +77,19 @@ class Trainer:
         self.amp_enabled = use_amp
         self.scaler = torch.amp.GradScaler("cuda", enabled=(cfg.dtype == "fp16" and use_amp))
 
+        # ---------------- 训练稳定化：MuonClip / QK-Clip ----------------
+        # 前向时顺带观测逐 head 的 max attention logit，每 N 步把越界的 Q/K 拉回安全区。
+        self.qk_clip = None
+        if getattr(cfg, "qk_clip_tau", 0) > 0:
+            from .qk_clip import QKClipGuard
+
+            self.qk_clip = QKClipGuard(
+                self.raw_model, tau=cfg.qk_clip_tau,
+                alpha=getattr(cfg, "qk_clip_alpha", 0.5),
+                every=getattr(cfg, "qk_clip_every", 50),
+            ).install()
+            log.info("QK-Clip enabled: tau=%.1f every=%d", cfg.qk_clip_tau, cfg.qk_clip_every)
+
         # ---------------- 状态 ----------------
         self.step = 0
         self.best_eval = float("inf")
@@ -114,13 +127,21 @@ class Trainer:
         with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype,
                             enabled=self.amp_enabled):
             logits = self.model(input_ids, attn_mask=attn_mask)
-        return language_modeling_loss(
+        loss_d = language_modeling_loss(
             logits, labels,
             label_smoothing=self.cfg.label_smoothing,
             z_loss_weight=self.cfg.z_loss_weight,
             aux_loss=self.raw_model.last_aux_loss,
             aux_weight=self.cfg.moe_aux_weight,
         )
+        # MTP 辅助损失：只加监督信号，不改变推理时的主 logits
+        if getattr(self.cfg, "mtp_loss_weight", 0) > 0 and self.raw_model.last_mtp_logits:
+            loss_d["mtp"] = mtp_loss(self.raw_model.last_mtp_logits, labels,
+                                     weight=self.cfg.mtp_loss_weight)["mtp"]
+            loss_d["loss"] = loss_d["loss"] + loss_d["mtp"]
+        else:
+            loss_d["mtp"] = torch.zeros((), device=logits.device)
+        return loss_d
 
     # ------------------------------------------------------------------ #
     def train_step(self, batch) -> Dict[str, float]:
@@ -128,7 +149,8 @@ class Trainer:
         loss_d = self._compute_loss(batch)
         (loss_d["loss"] / cfg.grad_accum_steps).backward()
 
-        stats = {"ce": float(loss_d["ce"]), "z": float(loss_d["z"]), "aux": float(loss_d["aux"])}
+        stats = {"ce": float(loss_d["ce"]), "z": float(loss_d["z"]), "aux": float(loss_d["aux"]),
+                 "mtp": float(loss_d["mtp"])}
         return stats
 
     def _optimizer_step(self) -> float:
@@ -182,6 +204,8 @@ class Trainer:
                 for k in acc_stats:
                     acc_stats[k] += s[k] / cfg.grad_accum_steps
             grad_norm = self._optimizer_step()
+            if self.qk_clip is not None:
+                self.qk_clip.maybe_clip(self.step)
             dt = self.step_timer.stop()
             self.step += 1
 

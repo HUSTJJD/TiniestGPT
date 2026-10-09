@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 from .tools import ToolRegistry, tool
 
 __all__ = ["build_default_registry", "calculator", "think", "now", "read_file", "write_file",
-           "list_dir", "python_repl", "todo_write", "rag_search", "web_search"]
+           "list_dir", "python_repl", "python_sandbox", "todo_write", "rag_search", "web_search"]
 
 
 def _default_root() -> Path:
@@ -111,18 +111,38 @@ def list_dir(path: str = ".") -> str:
 @tool(name="python_repl", description="在独立子进程中执行 Python 代码（有超时；默认禁用）",
       dangerous=True)
 def python_repl(code: str, timeout: float = 5.0, enabled: bool = False) -> str:
-    """执行 Python 代码并返回 stdout（子进程 + 超时，不影响主进程状态）。"""
+    """执行 Python 代码并返回 stdout。
+
+    走 :mod:`tiniestgpt.agent.sandbox`：**受限子进程** + 墙钟超时 +
+    CPU/内存限额 + 禁用网络 + 输出截断。进程退出后不保留状态。
+    """
     if not enabled:
         return "python_repl 已禁用：创建工具时设置 allow_python=True 以启用"
-    try:
-        proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                              text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return f"执行超时（{timeout}s）"
-    except Exception as exc:
-        return f"执行失败: {exc}"
-    out = (proc.stdout or "") + (proc.stderr or "")
-    return out[:4000] if out.strip() else "(无输出)"
+    from .sandbox import SandboxConfig, run_python
+
+    cfg = SandboxConfig(timeout=float(timeout), cpu_seconds=max(int(timeout), 1))
+    return run_python(code, cfg).as_text()
+
+
+@tool(name="python_sandbox", description="在持久化沙箱工作目录中执行 Python（文件会保留）",
+      dangerous=True)
+def python_sandbox(code: str, timeout: float = 5.0, enabled: bool = True) -> str:
+    """在同一个沙箱工作目录里执行代码——**上一步写的文件下一步还在**。
+
+    这是长程 Agent 的关键：没有持久化工作目录，
+    Agent 就无法"先写脚本、再跑脚本、再改脚本"。
+    """
+    if not enabled:
+        return "python_sandbox 已禁用"
+    from .sandbox import Sandbox, SandboxConfig
+
+    global _SANDBOX
+    if _SANDBOX is None:
+        _SANDBOX = Sandbox(SandboxConfig(timeout=float(timeout)))
+    return _SANDBOX.run(code).as_text()
+
+
+_SANDBOX = None
 
 
 # --------------------------------------------------------------------------- #

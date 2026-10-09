@@ -29,8 +29,10 @@ from .linear_attention import LinearAttention
 from .mla import MultiHeadLatentAttention
 from .mlp import FeedForward
 from .moe import MoE
+from .mtp import MTPModule
 from .norms import build_norm
 from .rope import RotaryEmbedding
+from .sequence_mixer import GatedDeltaNet, Mamba2Mixer
 
 __all__ = ["TransformerBlock", "Transformer"]
 
@@ -43,8 +45,18 @@ class TransformerBlock(nn.Module):
         self.layer_type = layer_type
         self.pre_norm = cfg.pre_norm
 
-        if layer_type == "linear":
-            self.mixer: nn.Module = LinearAttention(cfg, layer_idx)
+        if layer_type == "gdn":
+            self.mixer: nn.Module = GatedDeltaNet(cfg, layer_idx)
+        elif layer_type == "mamba2":
+            self.mixer = Mamba2Mixer(cfg, layer_idx)
+        elif layer_type == "linear":
+            # "linear" 是可配置的槽位：retention(2023) / gdn / mamba2 三选一
+            if cfg.seq_mixer == "gdn":
+                self.mixer = GatedDeltaNet(cfg, layer_idx)
+            elif cfg.seq_mixer == "mamba2":
+                self.mixer = Mamba2Mixer(cfg, layer_idx)
+            else:
+                self.mixer = LinearAttention(cfg, layer_idx)
         elif cfg.attn_type == "mla":
             self.mixer = MultiHeadLatentAttention(cfg, layer_idx)
         else:
@@ -117,7 +129,11 @@ class Transformer(nn.Module):
         if cfg.tie_embeddings:
             self.lm_head.weight = self.tok_embeddings.weight
 
+        # MTP：n 个轻量预测头，共享 lm_head（推理时同时充当推测解码的草稿器）
+        self.mtp = MTPModule(cfg, cfg.mtp_n_predict) if cfg.mtp_enabled else None
+
         self.last_aux_loss: Optional[torch.Tensor] = None
+        self.last_mtp_logits: Optional[List[torch.Tensor]] = None
         self.init_weights()
 
     # ------------------------------------------------------------------ #
@@ -145,6 +161,7 @@ class Transformer(nn.Module):
         is_causal: bool = True,
         output_hidden_states: bool = False,
         logits_to_keep: int = 0,
+        return_mtp: bool = False,
     ) -> torch.Tensor | Tuple[torch.Tensor, List[torch.Tensor]]:
         B, T = input_ids.shape
         device = input_ids.device
@@ -169,6 +186,9 @@ class Transformer(nn.Module):
         if logits_to_keep > 0:
             x = x[:, -logits_to_keep:, :]
         logits = self.lm_head(x)
+        # MTP：只在需要时算（推理的草稿阶段 / 训练算损失时）
+        self.last_mtp_logits = self.mtp(x, self.lm_head) if (
+            self.mtp is not None and (return_mtp or self.training)) else None
         if output_hidden_states:
             return logits, hidden
         return logits
@@ -207,6 +227,34 @@ class Transformer(nn.Module):
         h, d = self.cache_spec()
         return int(2 * self.cfg.n_layers * h * d * torch.empty(0, dtype=dtype).element_size())
 
+    def recurrent_state_bytes(self, dtype: torch.dtype = torch.float32) -> int:
+        """线性 / SSM 层的递归状态字节数——**按序列计，与上下文长度无关**。
+
+        这是 GDN / Mamba 相对 Full Attention 的核心收益：
+        KV Cache 是 ``O(L)``，而这里的固定状态是 ``O(1)``。
+        """
+        el = torch.empty(0, dtype=dtype).element_size()
+        total = 0
+        for block in self.layers:
+            m = getattr(block, "mixer", None)
+            shape = getattr(m, "state_shape", None)
+            if shape is None:
+                continue
+            n = 1
+            for s in shape:
+                n *= s
+            total += n * el
+        return int(total)
+
+    @property
+    def mixer_histogram(self) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        for block in self.layers:
+            m = block.mixer
+            name = type(m).__name__
+            out[name] = out.get(name, 0) + 1
+        return out
+
     def flops_per_token(self, seq_len: int = 1024) -> float:
         """估算每 token 的前向 FLOPs（用于 MFU）。"""
         n = self.active_params
@@ -229,6 +277,8 @@ class Transformer(nn.Module):
             f"  ffn           : {'MoE x%d (top-%d)' % (self.cfg.n_experts, self.cfg.n_experts_per_tok)
                                 if self.cfg.moe_enabled else self.cfg.act_type}",
             f"  layer types   : {dict((t, self.layer_types.count(t)) for t in set(self.layer_types))}",
+            f"  mixers        : {self.mixer_histogram}",
             f"  kv/token      : {self.kv_cache_bytes_per_token() / 1024:.2f} KB @fp16",
+            f"  recurrent s/s : {self.recurrent_state_bytes() / 1024:.2f} KB/seq（与上下文长度无关）",
         ]
         return "\n".join(lines)

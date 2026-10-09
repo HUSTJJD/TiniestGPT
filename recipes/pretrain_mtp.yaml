@@ -1,0 +1,57 @@
+# MTP（多 token 预测）：训练时多给监督信号，推理时当推测解码的草稿器
+#   python -m tiniestgpt.cli pretrain --config recipes/pretrain_mtp.yaml
+#   python benchmarks/inference_ablation.py --checkpoint out/mtp/last.pt   # 看 L7 档
+#
+# 读这张表的正确姿势：MTP **不保证加速**。
+# 看 L7 那一行的 τ（平均接受长度）——τ>1 才有收益，否则多出来的验证前向反而更慢。
+model:
+  vocab_size: 2048
+  dim: 384
+  n_layers: 12
+  n_heads: 8
+  n_kv_heads: 2
+  max_seq_len: 1024
+
+  norm_type: rms
+  pre_norm: true
+  post_norm: true
+  qk_norm: true
+
+  attn_type: gqa
+  attn_window: 512
+  attn_sinks: 4
+
+  act_type: swiglu
+  tie_embeddings: true
+
+  # ---- MTP ----
+  mtp_enabled: true
+  mtp_n_predict: 2        # DeepSeek 用 1，MiniMax 用 3；越大草稿越长但接受率越低
+
+data_dir: data/packed
+batch_size: 8
+seq_len: 512
+max_steps: 2000
+grad_accum_steps: 4
+eval_every: 200
+log_every: 20
+save_every: 500
+
+optimizer: muon
+lr: 3.0e-4
+muon_lr: 0.02
+weight_decay: 0.1
+grad_clip: 1.0
+
+lr_schedule: wsd
+warmup_steps: 100
+decay_fraction: 0.2
+
+dtype: bf16
+
+label_smoothing: 0.0
+moe_aux_weight: 0.01
+mtp_loss_weight: 0.1      # MTP 是辅助损失：太大反而拖累主损失
+
+out_dir: out/mtp
+seed: 42
