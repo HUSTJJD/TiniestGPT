@@ -1,0 +1,56 @@
+# 标准 benchmark 语料：WikiText-2 raw train（6.4MB parquet，需联网 + pyarrow）
+#   python -m tiniestgpt.cli data --config recipes/data_wikitext2.yaml
+#
+# 与 TinyStories 的区别：这是语言建模的**标准 benchmark**，
+# 训练出来的 perplexity 可以和论文里的数字大致对标（口径一致时）。
+# 但它是百科文本，难度高得多 —— 小模型上 loss 下降会明显更慢、生成也没故事那么"顺"。
+#
+# 注意：WikiText 的"一行"常常只是一个标题（"= Valkyria Chronicles III ="），
+# datasets.py 会先按 min_doc_chars 合并成段落，否则会被清洗阶段全杀掉。
+out_dir: data
+source: download
+source_name: wikitext2
+max_docs: 20000
+min_doc_chars: 400        # 百科段落比故事长，合并阈值调高一点
+
+cleaning:
+  min_chars: 300
+  max_chars: 200000
+  min_words: 50
+  max_line_dup_ratio: 0.40
+  max_ngram_dup_ratio: 0.40
+  max_bullet_ratio: 0.60
+  max_url_count: 10
+  min_alpha_ratio: 0.65
+  max_symbol_ratio: 0.20
+  max_digit_ratio: 0.20
+  min_mean_word_len: 2.0
+  max_mean_word_len: 20.0
+  languages: [latin]
+  min_lang_ratio: 0.75
+  min_stopword_ratio: 0.0
+
+dedup_enabled: true
+dedup_threshold: 0.85
+dedup_num_perm: 64
+dedup_rows_per_band: 8
+
+quality_enabled: true
+quality:
+  mode: heuristic
+  heuristic_min_score: 0.25
+  keep_top_fraction: 1.0
+train_classifier: false
+
+tokenizer_path: data/tokenizer_wt2.json
+vocab_size: 8192          # 百科词汇量大，词表再大一点
+force_retrain_tokenizer: true
+min_pair_freq: 2
+
+packing:
+  seq_len: 512
+  strategy: bfd
+  shuffle: true
+  seed: 0
+  drop_last: true
+  max_docs_per_pack: 32

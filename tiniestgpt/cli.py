@@ -9,7 +9,7 @@ from pathlib import Path
 
 __all__ = ["main"]
 
-_SUBCOMMANDS = ("data", "pretrain", "generate", "serve", "agent", "quantize", "bench", "info")
+_SUBCOMMANDS = ("data", "datasets", "pretrain", "generate", "serve", "agent", "quantize", "bench", "info")
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -63,6 +63,27 @@ def main(argv=None) -> int:
         if a.n_docs:
             cfg.n_docs = a.n_docs
         run_pipeline(cfg)
+        return 0
+
+    # ------------------------------------------------------------ datasets
+    if cmd == "datasets":
+        from .data.datasets import DATASETS, available_datasets, probe_size
+
+        p = argparse.ArgumentParser("datasets")
+        p.add_argument("--probe", action="store_true", help="发 HEAD 请求看远端体积（不下载）")
+        p.add_argument("--name", type=str, default=None)
+        a = p.parse_args(rest)
+        names = [a.name] if a.name else available_datasets()
+        for n in names:
+            spec = DATASETS[n]
+            line = f"{n:<14} {spec.desc}"
+            if a.probe:
+                try:
+                    info = probe_size(n)
+                    line += f"  [{info['bytes'] / 1e6:.1f} MB]"
+                except Exception as exc:
+                    line += f"  [probe failed: {type(exc).__name__}]"
+            print(line)
         return 0
 
     # ------------------------------------------------------------ pretrain

@@ -21,7 +21,7 @@
 
 | # | 环节 | 覆盖的关键技术 | 代码入口 |
 |---|------|----------------|----------|
-| 1 | **数据处理** | 归一化 / 规则过滤 / PII 脱敏 / MinHash+LSH 去重 / 质量打分（特征启发式 + 可训练判别器）/ BPE 训练 / 文档打包（无交叉污染）/ 内存映射分片 | `tiniestgpt/data/` |
+| 1 | **数据处理** | 归一化 / 规则过滤 / PII 脱敏 / MinHash+LSH 去重 / 质量打分（特征启发式 + 可训练判别器）/ BPE 训练 / 文档打包（无交叉污染）/ 内存映射分片 / **真实数据集下载（TinyStories / Shakespeare / WikiText-2）** | `tiniestgpt/data/` |
 | 2 | **分词器** | 从零训练 BPE、GPT-2 风格预切分、special token、并行批量编码、encode/decode 往返测试 | `tiniestgpt/data/tokenizer/` |
 | 3 | **模型架构** | Pre/Post RMSNorm(Sandwich)、RMSNorm/QK-Norm、RoPE+YaRN+mRoPE、GQA/MQA/MLA、SwiGLU、滑动窗口 + Attention Sink、稀疏 MoE（共享专家 + 无辅助损失负载均衡）、混合线性注意力层、z-loss | `tiniestgpt/model/` |
 | 4 | **预训练** | AdamW / Muon / Sophia、WSD & 余弦调度、梯度裁剪 + NaN 守卫、bf16 混合精度、梯度检查点、DDP / FSDP、异步 checkpoint、MFU 统计 | `tiniestgpt/train/` |
@@ -95,6 +95,14 @@ uv run python -m tiniestgpt.cli info
 
 # 2) 生成离线玩具语料 → 训练 BPE → 清洗/去重/打分 → 打包（无需联网）
 python -m tiniestgpt.cli data --config recipes/data_toy.yaml
+
+# 2b) 或直接用**真实数据集**（只需联网一次）
+python -m tiniestgpt.cli datasets --probe          # 看内置数据集与体积
+python -m tiniestgpt.cli data      --config recipes/data_tinystories.yaml   # TinyStories 19MB
+python -m tiniestgpt.cli data      --config recipes/data_wikitext2.yaml     # WikiText-2（标准 benchmark）
+python -m tiniestgpt.cli pretrain  --config recipes/pretrain_tinystories.yaml
+python -m tiniestgpt.cli generate  --checkpoint out/tinystories/last.pt \
+    --tokenizer data/tokenizer_ts.json --prompt "Once upon a time" --max-tokens 120
 
 # 3) 预训练（单卡，约 3 分钟可见 loss 下降）
 python -m tiniestgpt.cli pretrain --config recipes/pretrain_tiny.yaml
@@ -181,6 +189,10 @@ KV Cache → PagedAttention → 连续批处理 → Triton 内核 → 量化 →
   **10/10 PASS**。
 - 端到端冒烟已跑通：`data → pretrain → generate → agent → serve → quantize`。
 - GPU 训练（bf16，20.2M 参数）：**~22,500 tok/s**，MFU 4%。
+- **真实语料（TinyStories）实测**：19.4MB → 12,552 篇 → 4.88M tokens（BPE 3.99 B/token，
+  padding 4.1%），全套流水线 **66 秒**；49M 参数模型训 300 步（约 7 分钟）
+  loss 2.87→2.37、eval ppl **9.5**、11.5k tok/s、显存峰值 **8.3 GB**
+  （RTX 3060 12GB 可跑，完整 3000 步约 70 分钟）。
 - GPU 推理消融（`batch=8`，`benchmarks/inference_ablation.py`）：
 
 | 优化项 | 吞吐 | 相对 L0 |

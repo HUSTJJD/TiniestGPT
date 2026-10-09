@@ -1,0 +1,69 @@
+{
+  "stages": {
+    "load": {
+      "docs": 13100
+    },
+    "clean": {
+      "in": 13100,
+      "out": 13014,
+      "kept_ratio": 0.9934351145038168,
+      "reject_reasons": {
+        "mixed_script": 65,
+        "too_few_words": 17,
+        "low_alpha": 2,
+        "high_digit": 1,
+        "bullet_list": 1
+      },
+      "seconds": 8.4
+    },
+    "dedup": {
+      "in": 13014,
+      "out": 13014,
+      "exact_dups": 0,
+      "near_dups": 0,
+      "seconds": 4.45
+    },
+    "quality": {
+      "in": 13014,
+      "out": 13014,
+      "seconds": 6.35
+    },
+    "tokenizer": {
+      "vocab_size": 8192,
+      "merges": 7928,
+      "seconds": 54.47,
+      "longest_tokens": [
+        " characteristics",
+        " transportation",
+        " reconstruction",
+        " reconnaissance",
+        " responsibility",
+        " archaeological",
+        " administration",
+        " opportunities",
+        " Massachusetts",
+        " understanding",
+        " circumstances",
+        " Corythosaurus"
+      ]
+    },
+    "tokenize": {
+      "docs": 13014,
+      "tokens": 2696941,
+      "tokens_per_doc": 207.23382511141847,
+      "seconds": 16.4,
+      "compression_bytes_per_token": 4.01076923818504
+    },
+    "pack": {
+      "packs": 5388,
+      "seq_len": 512,
+      "tokens": 2758656,
+      "pad_tokens": 67899,
+      "pad_ratio": 0.024613072452672607,
+      "docs_per_pack_mean": 2.415367483296214,
+      "seconds": 2.63,
+      "path": "data_wt2\\packed\\shard_00000.npz"
+    }
+  },
+  "total_seconds": 97.83
+}

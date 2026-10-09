@@ -11,6 +11,7 @@ venv/
 
 # 运行产物
 data/
+data_*/           # 切换数据源时另开的目录（如 data_wt2/）
 out/
 *.pt
 *.npz

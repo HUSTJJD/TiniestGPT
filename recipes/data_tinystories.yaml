@@ -1,0 +1,52 @@
+# 真实语料流水线：TinyStories 验证集（~19MB / 约 2.2 万篇故事，需联网一次）
+#   python -m tiniestgpt.cli data --config recipes/data_tinystories.yaml
+#
+# 先用 max_docs 限制规模跑通，确认 pipeline_report.json 的过滤分布合理后再放大。
+out_dir: data
+source: download
+source_name: tinystories
+max_docs: 20000          # 先跑 2 万篇；想用全量改成 null
+min_doc_chars: 200
+
+cleaning:
+  min_chars: 200
+  max_chars: 200000
+  min_words: 30
+  max_line_dup_ratio: 0.40
+  max_ngram_dup_ratio: 0.40
+  max_bullet_ratio: 0.60
+  max_url_count: 10
+  min_alpha_ratio: 0.60
+  max_symbol_ratio: 0.20
+  max_digit_ratio: 0.20
+  min_mean_word_len: 2.0
+  max_mean_word_len: 20.0
+  languages: [latin]
+  min_lang_ratio: 0.70
+  min_stopword_ratio: 0.0
+
+dedup_enabled: true
+dedup_threshold: 0.85
+dedup_num_perm: 64
+dedup_rows_per_band: 8
+
+# 真实语料的分数分布比玩具语料分散得多，阈值放宽一点，先看报告再收紧
+quality_enabled: true
+quality:
+  mode: heuristic
+  heuristic_min_score: 0.25
+  keep_top_fraction: 1.0
+train_classifier: false
+
+tokenizer_path: data/tokenizer_ts.json
+vocab_size: 4096          # 真实语料用大一点的词表，压缩率明显更好
+force_retrain_tokenizer: true
+min_pair_freq: 2
+
+packing:
+  seq_len: 512
+  strategy: bfd
+  shuffle: true
+  seed: 0
+  drop_last: true
+  max_docs_per_pack: 32

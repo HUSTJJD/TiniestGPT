@@ -1,0 +1,82 @@
+# TinyStories 真实语料预训练：~45M 参数，单卡 3060 12GB 可跑
+#   python -m tiniestgpt.cli pretrain --config recipes/pretrain_tinystories.yaml
+#
+# 与 pretrain_tiny.yaml 的差别：
+#   * 词表 2048 → 4096（真实语料词汇量大，词表小会把 token 数撑爆）
+#   * dim 384 → 512 / 12 → 16 层（真实分布更复杂，容量要跟上）
+#   * 滑动窗口关掉（故事内部需要长程指代）
+#   * 词表变大后 embedding 占比高，仍然 tie_embeddings 省参数
+model:
+  vocab_size: 4096
+  dim: 512
+  n_layers: 16
+  n_heads: 8
+  n_kv_heads: 4          # GQA：8 → 4
+  head_dim: 0
+  hidden_dim: 0
+  max_seq_len: 1024
+
+  norm_type: rms
+  pre_norm: true
+  post_norm: true
+  post_norm_init_zero: false
+  qk_norm: true
+
+  rope_type: yarn
+  rope_theta: 10000.0
+  rope_scaling: 1.0
+  rope_original_max_len: 1024
+
+  attn_type: gqa
+  attn_backend: auto
+  attn_window: -1        # 全注意力：故事里"前后呼应"很常见
+  attn_sinks: 0
+  attn_softcap: 0.0
+
+  act_type: swiglu
+  dropout: 0.0
+
+  moe_enabled: false
+  tie_embeddings: true
+  depth_scaled_init: true
+  z_loss_weight: 0.0
+  layer_types: ""
+
+data_dir: data/packed
+batch_size: 16
+seq_len: 512
+doc_mask: false
+num_prefetch: 2
+
+max_steps: 3000
+grad_accum_steps: 2
+eval_every: 200
+eval_batches: 20
+log_every: 20
+save_every: 500
+
+optimizer: muon
+lr: 3.0e-4
+muon_lr: 0.02
+weight_decay: 0.1
+momentum: 0.95
+ns_steps: 6
+betas: [0.9, 0.95]
+grad_clip: 1.0
+
+lr_schedule: wsd
+warmup_steps: 100
+decay_fraction: 0.2
+decay_type: 1-sqrt
+
+dtype: bf16
+compile_model: false
+gradient_checkpointing: false     # 12GB 还放得下；OOM 就打开它
+distributed: none
+
+label_smoothing: 0.0
+z_loss_weight: 0.0
+moe_aux_weight: 0.01
+
+out_dir: out/tinystories
+seed: 42
