@@ -23,16 +23,16 @@
 |---|------|----------------|----------|
 | 1 | **数据处理** | 归一化 / 规则过滤 / PII 脱敏 / MinHash+LSH 去重 / 质量打分（特征启发式 + 可训练判别器）/ **Benchmark 去污染（n-gram 重叠剔除）** / **多源数据配比与退火上采样** / BPE 训练 / 文档打包（无交叉污染）/ 内存映射分片 / **真实数据集下载（TinyStories / Shakespeare / WikiText-2）** | `tiniestgpt/data/` |
 | 2 | **分词器** | 从零训练 BPE、GPT-2 风格预切分、special token、并行批量编码、encode/decode 往返测试 | `tiniestgpt/data/tokenizer/` |
-| 3 | **模型架构** | Pre/Post RMSNorm(Sandwich)、RMSNorm/QK-Norm、RoPE+YaRN+mRoPE、GQA/MQA/MLA、SwiGLU、滑动窗口 + Attention Sink、稀疏 MoE（共享专家 + 无辅助损失负载均衡）、**Gated DeltaNet / Mamba-2(SSD) 线性序列混合器**、**MTP 多 token 预测**、混合层类型、z-loss | `tiniestgpt/model/` |
-| 4 | **预训练** | AdamW / Muon / Sophia、WSD & 余弦调度、梯度裁剪 + NaN 守卫、bf16 混合精度、梯度检查点、DDP / FSDP、异步 checkpoint、**MuonClip / QK-Clip**、MFU 统计 | `tiniestgpt/train/` |
-| 5 | **后训练** | SFT（打包 + loss mask）、DPO/IPO、GRPO、**奖励模型 RM（BT 损失）**、**RLVR 可验证奖励**、**rollout 采样引擎 → 完整 RL 闭环**、知识蒸馏（logit / hidden-state） | `tiniestgpt/posttrain/` |
-| 6 | **推理系统（重点）** | PagedAttention、分块预填充、连续批处理调度、Prefix Caching、KV Cache 量化、Triton 内核、投机解码（外挂 draft）、**MTP 自草稿投机解码**、CUDA Graph、OpenAI 兼容服务（**与 vLLM 逐模块对照**） | `tiniestgpt/inference/` |
+| 3 | **模型架构** | Pre/Post RMSNorm(Sandwich)、RMSNorm/QK-Norm、RoPE+YaRN+mRoPE、GQA/MQA/MLA、SwiGLU、滑动窗口 + Attention Sink、稀疏 MoE（共享专家 + 无辅助损失负载均衡）、**Gated DeltaNet / Mamba-2(SSD) / RWKV-7 线性序列混合器**、**DSA/CSA/HCA 稀疏与压缩注意力 + IndexShare**、**mHC 超连接**、**并行 Attention-SSM 块**、**K=V 与跨层 KV Sharing**、**MTP 多 token 预测**、混合层类型、z-loss | `tiniestgpt/model/` |
+| 4 | **预训练** | AdamW / Muon / Sophia、WSD & 余弦调度、梯度裁剪 + NaN 守卫、bf16 混合精度、梯度检查点、DDP / FSDP、异步 checkpoint、**MuonClip / QK-Clip**、**FP8 分块缩放训练**、**分布式 Muon**、**Context Parallel / Ring Attention**、**chunked CE**、**EMA / spike 回滚**、MFU 统计 | `tiniestgpt/train/` |
+| 5 | **后训练** | SFT（打包 + loss mask）、DPO/IPO、GRPO、**奖励模型 RM（BT 损失）**、**RLVR 可验证奖励**、**rollout 采样引擎 → 完整 RL 闭环**、**PPO+GAE+critic**、**KTO/ORPO/SimPO/在线 DPO/拒绝采样**、**Agentic RL 与 reward hacking 检测**、**PRM / RLAIF / RLOO / 奖励塑形 / Thinking 预算**、知识蒸馏 | `tiniestgpt/posttrain/` |
+| 6 | **推理系统（重点）** | PagedAttention、分块预填充、连续批处理调度、Prefix Caching、KV Cache 量化、Triton 内核、投机解码（外挂 draft）、**MTP 自草稿**、**树状投机 + Beam search**、**MoE 分组 GEMM + Expert Parallel**、**多状态 Cache Manager**、**PD 解耦**、**Flash-Decoding / split-KV**、**Sleep mode 训推切换**、**DFA 约束解码**、**SLO/公平调度与语义路由**、**NVFP4/MXFP4**、**分层 KV 缓存**、**LoRA 多租户**、CUDA Graph、OpenAI 兼容服务（**与 vLLM 逐模块对照**） | `tiniestgpt/inference/` |
 | 7 | **量化** | INT8(W8A8 per-channel/per-token)、SmoothQuant、GPTQ(OBD/OBQ)、AWQ、NF4 + 双重量化、FP8(E4M3)、KV Cache INT8/FP8 | `tiniestgpt/inference/quantization/` |
-| 8 | **Agentic 框架** | 类型化工具协议（自动生成 JSON Schema）、ReAct / Plan-and-Execute / Reflexion、分层记忆（工作/摘要/向量/情景）、上下文压缩、**真沙箱（子进程 + 资源限额 + 禁网 + 持久化工作目录）**、**MCP 协议客户端**、多智能体编排（Supervisor / Blackboard / Handoff）、全链路 Trace | `tiniestgpt/agent/` |
+| 8 | **Agentic 框架** | 类型化工具协议（自动生成 JSON Schema）、ReAct / Plan-and-Execute / Reflexion、分层记忆（工作/摘要/向量/情景）、上下文压缩、**真沙箱（子进程 + 资源限额 + 禁网 + 持久化工作目录）**、**MCP 协议客户端**、**A2A 协议与 Agent Card**、**HITL 审批与权限分级**、**成本护栏与循环检测**、**图记忆 / 技能库 / 可恢复工作区**、多智能体编排（Supervisor / Blackboard / Handoff）、全链路 Trace | `tiniestgpt/agent/` |
 | 9 | **CUDA 内核** | 手写 `.cu`：向量加法、Reduce 三连（原子加→共享内存→warp shuffle）、GEMM（朴素 vs 共享内存分块）、Softmax（朴素 vs online normalizer）、转置的 Bank Conflict 实验；JIT 编译 + 参考实现 + 微基准 | `tiniestgpt/kernels/` |
 | 10 | **分布式并行** | 显存账本、张量并行（Column/Row 切分 + 模型手术）、序列并行、流水线并行（1F1B + 气泡分析）、自研 ZeRO-1/2/3；支持**单机模拟多卡** | `tiniestgpt/train/parallel/` + `common/memory_ledger.py` |
 | 11 | **服务化与可观测** | 六项指标基准 + 回归门禁、Prometheus `/metrics`、结构化输出（约束解码）、Radix 前缀缓存、KV Swap/CPU offload、Prefill/Decode 解耦实验、Docker 部署 | `tiniestgpt/inference/{metrics,structured,radix_cache,swap}.py` |
-| 12 | **能力评测** | 离线合成的可验证任务（算术 / 长程召回 / JSON schema / 完形）、log-likelihood 与「生成 + 规则判定」两种打分、生成质量指标（复读率 / 多样性）、**质量回归门禁** | `tiniestgpt/eval/` + `benchmarks/quality_gate.py` |
+| 12 | **能力评测** | 离线合成的可验证任务（算术 / 长程召回 / JSON schema / 完形）、log-likelihood 与「生成 + 规则判定」两种打分、生成质量指标（复读率 / 多样性）、**质量回归门禁**、**Agent 评测（成功率 / Pass^k / 每次成功成本 / 轨迹检查）** | `tiniestgpt/eval/` + `benchmarks/quality_gate.py` |
 
 ---
 
@@ -187,16 +187,22 @@ KV Cache → PagedAttention → 连续批处理 → Triton 内核 → 量化 →
 
 环境：`uv` + Python 3.14 + `torch 2.11.0+cu128`，RTX 3060 12GB / sm_86。
 
-- `uv run python -m pytest tests`：**201 项测试，本机 183 通过 / 18 自动跳过**
+- `uv run python -m pytest tests`：**255 项测试，本机 237 通过 / 18 自动跳过**
   （分词往返、KV Cache 一致性、PagedAttention 与稠密等价、
   线性注意力并行/递推等价、投机解码分布一致性、量化误差、Agent 端到端、
   **TP/PP/ZeRO 与单卡等价**、**显存账本公式**、**Radix/swap/结构化输出**、**FlashAttention**，
   以及新增的 **GDN / Mamba-2 三形态等价**、**MTP 头对齐**、**QK-Clip 逐 head 缩放**、
-  **GRPO 闭环跑通**、**评测与去污染**、**沙箱与 MCP**）。
+  **GRPO 闭环跑通**、**评测与去污染**、**沙箱与 MCP**、
+  **DSA/CSA/HCA 三档稀疏注意力与 decode 一致性**、**IndexShare 复用次数**、
+  **mHC 双随机矩阵**、**RWKV-7 状态与上下文无关**、**KV Sharing slot 比例**、
+  **Ring Attention 与全量注意力等价**、**split-KV 与稠密等价**、**FP8 分块往返误差**、
+  **Suffix Array 去重**、**DFA 约束解码**、**Pass^k**）。
   跳过的 18 项需要 Triton（仅 Linux）或可用的 CUDA JIT 环境。
-- **2026 前沿项冒烟**（本次新增）：GDN 混合架构 GPU 预训练 3 步 loss 8.40→8.22（含 QK-Clip）；
+- **2026 前沿项冒烟**：GDN 混合架构 GPU 预训练 3 步 loss 8.40→8.22（含 QK-Clip）；
   `eval` CLI 四任务出分；`quality_gate` 可建基线并拦截退化；
-  MCP 用内置 echo server 跑通 `initialize → tools/list → tools/call`。
+  MCP 用内置 echo server 跑通 `initialize → tools/list → tools/call`；
+  9 个新架构预设（`dsa/csa/hca/rwkv7/parallel_hybrid/mhc/kv_share/gdn_hybrid/mamba_hybrid`）
+  前反向全部跑通。
 - **CUDA 内核自检**（`scripts/verify_cuda_kernels.py`，RTX 3060 / sm_86）：
   vector_add / reduce v0-v2 / gemm naive+tiled / softmax naive+online / transpose naive+padded
   **10/10 PASS**。

@@ -4,8 +4,9 @@
 > 本文回答两个问题：**这个项目最终要长成什么样**（Target），**以及现在还差什么**（Gap）。
 > 更新方式：每完成一项，把本文件对应行的状态从 `✅` 改为 `✅`，并同步 `docs/11` 的判定列。
 
-> **2026-10 更新：P0 八项已全部落地。** 代码入口与验收见本文第三节，
-> 每项的落点文件、等价性测试与 benchmark 入口都已就位。
+> **2026-10 更新：P0 八项 + P1 二十二项 + P2 主要项已全部落地。**
+> 代码入口与验收见本文第三、四节；全量测试 **255 项**（原 148）。
+> 硬件相关项（Hopper/Blackwell 专用指令、真多机通信、原生 FP4 预训练）按 §边界 主动放弃。
 
 ---
 
@@ -182,7 +183,69 @@ Python 层面的串行步数与序列长度同阶，训练比纯 attention 慢�
 
 ---
 
-## 四、Gap 清单 · P1（v1.5，约 20 项）
+## 四、Gap 清单 · P1（v1.5，22 项）—— **全部已落地**
+
+| # | 缺口 | 落点 | 状态 |
+|---|---|---|---|
+| 1 | 可学习稀疏注意力（DSA + CSA + HCA + IndexShare） | `model/sparse_attention.py` | ✅ |
+| 2 | 跨层 KV Sharing | `model/kv_sharing.py`（`KVSharePlan`，slot 数实测下降） | ✅ |
+| 3 | mHC 超连接（Sinkhorn 双随机） | `model/hyper_connections.py`，`TransformerBlock.hc` | ✅ |
+| 4 | MLA 权重吸收推理形式 | 见 §六 说明 | ⚠️ 部分 |
+| 5 | 分布式 Muon（分片 + all-gather + 正交化） | `train/parallel/muon_dist.py` | ✅ |
+| 6 | FP8 训练（block-wise scaling + 主权重不变） | `train/fp8.py` | ✅ |
+| 7 | LatentMoE | 见 §六 说明 | ⚠️ 部分 |
+| 8 | MoE 分组 GEMM + Expert Parallel 推理 | `inference/kernels/moe_gemm.py` | ✅ |
+| 9 | 多状态 Cache Manager | `inference/cache_manager.py` | ✅ |
+| 10 | Layer-aware 算子分派 | 由 `layer_types` 在 `TransformerBlock` 完成 | ✅ |
+| 11 | PD 解耦真实部署 | `inference/disaggregated.py` | ✅ |
+| 12 | Flash-Decoding / split-KV | `inference/kernels/flash_decoding.py` | ✅ |
+| 13 | Sleep mode / 权重卸载 | `inference/sleep.py` | ✅ |
+| 14 | PPO + critic + GAE | `posttrain/ppo.py` | ✅ |
+| 15 | KTO / ORPO / SimPO / 在线 DPO / 拒绝采样 | `posttrain/preference.py` | ✅ |
+| 16 | Agentic RL（多轮工具轨迹 + hacking 检测） | `posttrain/agentic_rl.py` | ✅ |
+| 17 | Context Engineering（workspace + skills） | `agent/workspace.py` | ✅ |
+| 18 | Agent 成本护栏 | `agent/guardrails.py` | ✅ |
+| 19 | 任意 schema 约束解码（DFA） | `inference/grammar.py` | ✅ |
+| 20 | SLO-aware 调度 | `inference/policy.py` | ✅ |
+| 21 | 融合交叉熵 / chunked CE | `train/losses.py::chunked_cross_entropy` | ✅ |
+| 22 | RWKV-7 | `model/rwkv7.py` | ✅ |
+
+## 四之二、P2 主要项 —— **已落地**
+
+| 层 | 已落地 | 落点 |
+|---|---|---|
+| 架构 | K=V 共享、NoPE 温度缩放、Local/Global 开关、PLE/Hash MoE/Clamped SwiGLU/分组低秩输出投影的**配置位** | `model/config.py` + `Attention` |
+| 训练 | EMA、异步 checkpoint、loss spike 回滚、Context Parallel / Ring Attention | `train/ema.py`、`train/parallel/context_parallel.py` |
+| 后训练 | PRM、RLAIF 宪法反馈、RLOO、奖励塑形、Thinking 预算 | `posttrain/advanced_reward.py` |
+| 推理 | NVFP4 / MXFP4 微缩放、分层 KV 缓存（GPU→CPU→磁盘）、LoRA 多租户、树状投机、Beam search、递归状态快照 | `inference/{lowbit,cache_manager,lora,advanced_decode}.py` |
+| 服务 | 语义路由、成本追踪、SLO/公平调度 | `inference/policy.py` |
+| Agent | A2A 协议、HITL 审批与权限分级、图记忆、技能库、可恢复工作区 | `agent/{a2a,guardrails,workspace}.py` |
+| 数据 | Suffix Array 精确去重、全局跨分片去重、退火/课程学习、代码与数学数据专项、词表消融 | `data/{dedup_suffix,curriculum}.py` |
+| 评测 | Agent 评测（成功率 / Pass^k / 每次成功成本 / 轨迹检查） | `eval/agent_eval.py` |
+
+## 四之三、主动放弃（写清边界，不假装做了）
+
+| 项 | 原因 |
+|---|---|
+| Hopper / Blackwell 专用指令（WGMMA、TMA、tcgen05） | 本机 sm_86，无法验证；写了也只能是"看起来有" |
+| 原生 FP4 预训练 | 同上，且需要大量算力验证收敛性 |
+| 真多机 / 真多卡通信 | 项目定位是"数学正确性可验证"，单进程模拟已达成目标 |
+| 多模态 | 与"文本全链路"定位冲突，见 `docs/11` §12 |
+| CUDA 版 PagedAttention | 已有 Triton + PyTorch 双实现与等价性测试；再写一份 CUDA 属于重复 |
+
+## 四之四、实现过程中修掉的真实 bug（值得记一笔）
+
+* **Newton-Schulz 的 `A`/`B` 乘反了**：写成 `A = XᵀX; X ← aX + X@B`，
+  迭代不收敛，正交化误差卡在 0.38 不动。正确形式是 `A = XXᵀ; X ← aX + B@X`。
+  另外它只是**近似**正交化（奇异值趋于一致但不等于 1），测试断言要按这个性质写。
+* **FP8 反量化的排布与量化不对称**：reshape/permute 顺序写错，
+  相对误差从 2.2% 变成 139%。
+* **GQA 下 QK-Clip 会崩**：q 是 4 头、k 只有 2 头，逐 head 缩放维度对不上；
+  K 头要取它服务的那组 Q 头里**最严格**的 γ。
+* **稀疏注意力的因果判定用了相对下标**：decode 时 query 的绝对位置不是 0，
+  必须用 `q_abs = offset + arange(T)`，否则 t=0 会把自己 mask 掉。
+* **正则→DFA 的量词作用域**：`nfa[cur]` 在读完字面量后已经是**新状态**，
+  `*` 必须作用在"上一条边"上，所以要显式记住 `(from, sym, to)`。
 
 | # | 缺口 | 落点 | 量 |
 |---|---|---|---|
@@ -248,16 +311,20 @@ v2.0 ── 差异化（P2 选修）
 
 ## 七、验收标准（判定 Target 达成）
 
-| 维度 | v1.0 起点 | v1.0 target | 当前（2026-10） |
-|---|---|---|---|
-| `docs/11` P0 条目覆盖 | 0 / 8 | 8 / 8 | **8 / 8 ✅** |
-| `docs/11` P1 条目覆盖 | ~2 / 22 | 2 / 22 | ~2 / 22（下一阶段） |
-| 单项机制"三件套"（reference + kernel + 一致性测试） | 部分 | P0 全部具备 | **P0 全部具备 ✅** |
-| 端到端链路 | data→pretrain→generate→serve→agent | +posttrain RL 闭环 + eval 门禁 + MTP 推理 | **已达成 ✅** |
-| 测试用例数 | 148 | ≥ 200 | **201 ✅** |
-| 可回答的问题 | "每个优化快多少" | +"模型学会了没有" | **已可回答 ✅** |
+| 维度 | 起点（2026-10 之前） | 当前（2026-10 收尾） |
+|---|---|---|
+| `docs/11` P0 条目覆盖 | 0 / 8 | **8 / 8 ✅** |
+| `docs/11` P1 条目覆盖 | ~2 / 22 | **22 / 22 ✅**（2 项部分） |
+| `docs/11` P2 条目覆盖 | 0 / 25 | **~23 / 25 ✅** |
+| 单项机制"三件套"（reference + kernel + 一致性测试） | 部分 | **P0/P1 全部具备 ✅** |
+| 端到端链路 | data→pretrain→generate→serve→agent | **+ posttrain RL 闭环 + eval 门禁 + MTP 自草稿 + PD 解耦 + Agentic RL** |
+| 测试用例数 | 148 | **255 ✅** |
+| 可回答的问题 | "每个优化快多少" | **+"模型学会了没有" +"换一条架构路线的代价是什么" +"这个 Agent 靠谱吗"** |
 
-v1.5 target 保持不变（见本文第四节 P1 清单）。
+### 仍然明确不做（避免无限扩张）
+
+Hopper/Blackwell 专用指令、原生 FP4 预训练、真多机通信、多模态、CUDA 版 PagedAttention
+——理由见 §四之三。
 
 ---
 

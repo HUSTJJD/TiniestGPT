@@ -28,13 +28,28 @@ from .config import ModelConfig
 from .linear_attention import LinearAttention
 from .mla import MultiHeadLatentAttention
 from .mlp import FeedForward
+from .hyper_connections import HyperConnections, MHCBlock
 from .moe import MoE
 from .mtp import MTPModule
 from .norms import build_norm
 from .rope import RotaryEmbedding
+from .parallel_mixer import ParallelHybridMixer
+from .rwkv7 import RWKV7Mixer
 from .sequence_mixer import GatedDeltaNet, Mamba2Mixer
+from .sparse_attention import SparseAttention, SparseIndexBank
 
 __all__ = ["TransformerBlock", "Transformer"]
+
+
+# Transformer.__init__ 构造 layers 时临时放入共享的 IndexShare bank。
+# 用模块级槽位传递是为了不改动 TransformerBlock 的构造签名（它要保持简单可读）。
+_SPARSE_BANK = [None]
+
+
+def _sparse_bank(cfg):
+    if cfg.sparse_index_share <= 1:
+        return None
+    return _SPARSE_BANK[0]
 
 
 class TransformerBlock(nn.Module):
@@ -49,6 +64,21 @@ class TransformerBlock(nn.Module):
             self.mixer: nn.Module = GatedDeltaNet(cfg, layer_idx)
         elif layer_type == "mamba2":
             self.mixer = Mamba2Mixer(cfg, layer_idx)
+        elif layer_type == "rwkv7":
+            # 无 Attention、无 KV Cache 的矩阵状态（状态大小与上下文长度无关）
+            self.mixer = RWKV7Mixer(cfg, layer_idx)
+        elif layer_type == "parallel":
+            # 同层并行 Attention + SSM（Falcon-H1）
+            self.mixer = ParallelHybridMixer(cfg, layer_idx,
+                                             attn_ratio=cfg.parallel_attn_ratio,
+                                             ssm_kind=cfg.parallel_ssm)
+        elif layer_type == "sparse":
+            # DSA / CSA / HCA：可学习稀疏 + 压缩注意力（IndexShare 跨层复用）
+            self.mixer = SparseAttention(
+                cfg, layer_idx, mode=cfg.sparse_mode, index_topk=cfg.sparse_topk,
+                compression=cfg.sparse_compression, local_window=cfg.sparse_local_window,
+                index_heads=cfg.sparse_index_heads, index_dim=cfg.sparse_index_dim,
+                bank=_sparse_bank(cfg))
         elif layer_type == "linear":
             # "linear" 是可配置的槽位：retention(2023) / gdn / mamba2 三选一
             if cfg.seq_mixer == "gdn":
@@ -74,14 +104,19 @@ class TransformerBlock(nn.Module):
         self.aux_loss: Optional[torch.Tensor] = None
         self.moe_stats = None
 
-    def _mixer_and_ffn(self, x, positions, rope, cache, attn_mask, is_causal):
+        # mHC：残差从 1 条流扩成 hc_mult 条，混合矩阵用 Sinkhorn 投影成双随机
+        self.hc = HyperConnections(cfg.dim, mult=max(cfg.hc_mult, 1),
+                                   iters=cfg.hc_sinkhorn_iters) if cfg.hc_mult > 1 else None
+
+    def _sub_attn(self, x, positions, rope, cache, attn_mask, is_causal):
         h = self.norm1(x) if self.pre_norm else x
         h = self.mixer(h, positions=positions, rope=rope, cache=cache,
                        attn_mask=attn_mask, is_causal=is_causal, layer_type=self.layer_type)
         if self.post_norm1 is not None:
             h = self.post_norm1(h)
-        x = x + h
+        return h
 
+    def _sub_ffn(self, x):
         h = self.norm2(x) if self.pre_norm else x
         aux = None
         if isinstance(self.ffn, MoE):
@@ -90,9 +125,21 @@ class TransformerBlock(nn.Module):
             h = self.ffn(h)
         if self.post_norm2 is not None:
             h = self.post_norm2(h)
-        x = x + h
         self.aux_loss = aux
-        return x
+        return h
+
+    def _mixer_and_ffn(self, x, positions, rope, cache, attn_mask, is_causal):
+        if self.hc is None:
+            x = x + self._sub_attn(x, positions, rope, cache, attn_mask, is_causal)
+            x = x + self._sub_ffn(x)
+            return x
+
+        # mHC 路径：X 的形状是 [B, L, m, D]
+        X = MHCBlock.expand(x, self.hc.mult)
+        X = self.hc.post_mix(X, self._sub_attn(self.hc.pre_mix(X), positions, rope,
+                                               cache, attn_mask, is_causal))
+        X = self.hc.post_mix(X, self._sub_ffn(self.hc.pre_mix(X)))
+        return MHCBlock.collapse(X)
 
     def forward(self, x, positions=None, rope=None, cache=None,
                 attn_mask=None, is_causal=True) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -121,9 +168,18 @@ class Transformer(nn.Module):
             max_seq_len=cfg.max_seq_len, partial=cfg.rope_partial, mscale=cfg.rope_mscale,
         ) if cfg.rope_type != "none" else None
 
-        self.layers = nn.ModuleList([
-            TransformerBlock(cfg, i, self.layer_types[i]) for i in range(cfg.n_layers)
-        ])
+        # IndexShare 的 bank 是**跨层共享**的 nn.Module，必须挂在 Transformer 上
+        # 才能进 state_dict；放在 block 里会变成每层一份，失去"共享"的意义。
+        self.index_bank = SparseIndexBank(topk_freq=max(cfg.sparse_index_share, 1),
+                                          skip_offset=cfg.sparse_index_skip) \
+            if "sparse" in self.layer_types else None
+        _SPARSE_BANK[0] = self.index_bank
+        try:
+            self.layers = nn.ModuleList([
+                TransformerBlock(cfg, i, self.layer_types[i]) for i in range(cfg.n_layers)
+            ])
+        finally:
+            _SPARSE_BANK[0] = None
         self.norm_f = build_norm(cfg.norm_type, cfg.dim, cfg.norm_eps)
         self.lm_head = nn.Linear(cfg.dim, cfg.vocab_size, bias=False)
         if cfg.tie_embeddings:

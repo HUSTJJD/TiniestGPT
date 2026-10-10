@@ -39,8 +39,14 @@ class Attention(nn.Module):
 
         self.q_proj = nn.Linear(cfg.dim, cfg.n_heads * cfg.head_dim, bias=False)
         self.k_proj = nn.Linear(cfg.dim, cfg.n_kv_heads * cfg.head_dim, bias=False)
-        self.v_proj = nn.Linear(cfg.dim, cfg.n_kv_heads * cfg.head_dim, bias=False)
+        # K=V 共享（DeepSeek-V4 long-range MQA / Gemma 4 global）：
+        # 只缓存一份，K 与 V 取同一表示；省一半 KV Cache 与写入带宽。
+        self.kv_eq_v = bool(getattr(cfg, "kv_eq_v", False))
+        self.v_proj = None if self.kv_eq_v else \
+            nn.Linear(cfg.dim, cfg.n_kv_heads * cfg.head_dim, bias=False)
         self.o_proj = nn.Linear(cfg.n_heads * cfg.head_dim, cfg.dim, bias=False)
+        # 超长上下文推理的 attention 温度缩放（Llama 4 Scout 的做法）
+        self.temperature = float(getattr(cfg, "attn_temperature", 0.0) or 0.0)
 
         self.q_norm = QKNorm(cfg.head_dim) if cfg.qk_norm else None
         self.k_norm = QKNorm(cfg.head_dim) if cfg.qk_norm else None
@@ -66,7 +72,10 @@ class Attention(nn.Module):
 
         q = self.q_proj(x).view(B, T, H, D).transpose(1, 2)      # [B,H,T,D]
         k = self.k_proj(x).view(B, T, Hkv, D).transpose(1, 2)
-        v = self.v_proj(x).view(B, T, Hkv, D).transpose(1, 2)
+        # K=V 时 V 直接取 K 的表示（省掉一份投影与一份缓存）
+        v = k if self.kv_eq_v else self.v_proj(x).view(B, T, Hkv, D).transpose(1, 2)
+        if self.temperature > 0:
+            q = q / self.temperature
 
         if self.q_norm is not None:
             q = self.q_norm(q)

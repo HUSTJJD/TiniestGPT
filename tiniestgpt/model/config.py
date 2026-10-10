@@ -73,7 +73,7 @@ class ModelConfig:
     z_loss_weight: float = 0.0      # z-loss：压住 logits 的 log-sum-exp 漂移
 
     # ---------------- 层类型 ----------------
-    # 逗号分隔：full | window | linear | gdn | mamba2。留空 = 全部 full。
+    # 逗号分隔：full | window | linear | gdn | mamba2 | sparse | rwkv7 | parallel。留空 = 全部 full。
     # 例："window,window,full" 会循环应用到各层（滑动窗口与全注意力交替，兼顾效率与长程）。
     #     "gdn,gdn,gdn,full" 是 Qwen3.6 式的 3:1 混合（线性记忆 + 周期全局校正）。
     layer_types: str = ""
@@ -95,6 +95,54 @@ class ModelConfig:
     # ---------------- MTP 多 token 预测（2026 标配） ----------------
     mtp_enabled: bool = False
     mtp_n_predict: int = 1          # 额外预测几个未来 token（DeepSeek 用 1，MiniMax 用 3）
+
+    # ---------------- 稀疏 / 压缩注意力（2026 长上下文主线） ----------------
+    # layer_types 里出现 "sparse" 时生效：
+    #   dsa = Indexer 扫全量 + Top-K（DeepSeek-V3.2 / GLM-5.2）
+    #   csa = 先压缩 m 倍再 Indexer + Top-K（DeepSeek-V4）
+    #   hca = 极重压缩后不做 Top-K，全读（DeepSeek-V4 的粗粒度全局概览）
+    sparse_mode: str = "dsa"        # dsa | csa | hca
+    sparse_topk: int = 128          # 每个 query 选多少个历史位置
+    sparse_compression: int = 1     # csa/hca 的压缩倍率 m（csa 用 4，hca 用 128）
+    sparse_local_window: int = 64   # 局部窗口：局部精确性 + indexer 失效时的安全网
+    sparse_index_heads: int = 4     # Lightning Indexer 的头数（少而低维）
+    sparse_index_dim: int = 32
+    # IndexShare（GLM-5.2）：每 N 层才重算一次索引，中间层复用
+    sparse_index_share: int = 1     # 1 = 不共享；4 = 每 4 层算一次
+    sparse_index_skip: int = 0      # 前 N 层保留完整检索路径
+
+    # ---------------- KV Cache 压缩（2026 第一设计约束） ----------------
+    kv_eq_v: bool = False           # K=V 共享（DeepSeek-V4 MQA / Gemma 4 global）
+    # 跨层 KV Sharing（Gemma 4）："p"=producer 自己投影，"c"=复用上一个 producer
+    kv_share_pattern: str = ""      # 例 "p,c,c,c" → 4 层只用 1 份 KV
+
+    # ---------------- mHC 流形约束超连接（DeepSeek-V4） ----------------
+    hc_mult: int = 1                # 残差流的条数；>1 才启用超连接
+    hc_sinkhorn_iters: int = 20     # 双随机投影的迭代次数
+
+    # ---------------- 并行 Attention-SSM 块（Falcon-H1） ----------------
+    parallel_attn_ratio: float = 0.5   # Attention 分支占的通道比例
+    parallel_ssm: str = "mamba2"       # mamba2 | gdn
+
+    # ---------------- 其它 2026 架构细节 ----------------
+    # Hash MoE（DeepSeek-V4 前几层）：token_id → expert_id 的静态哈希做 warmup，
+    # 语义 gate 仍决定权重。作用是训练初期避免 router 抖动。
+    moe_hash_layers: int = 0
+    # Per-Layer Embedding（Gemma 4 E2B）：用"权重容量"换 Dense GEMM FLOPs
+    ple_enabled: bool = False
+    ple_dim: int = 0                # 0 → 32
+    # Clamped SwiGLU（gpt-oss）：低精度下 clamp 激活，避免极端值放大
+    act_clamp: float = 0.0          # 0 = 关闭；7.0 是 gpt-oss 的取值
+    # iRoPE（Llama 4）：每 N 层有一层不加 RoPE 并做全注意力
+    nope_every: int = 0             # 0 = 关闭；4 = 每 4 层一个 NoPE 全局层
+    # Local/Global 异构（Gemma 4）：局部层与全局层用不同 head_dim / rope_theta
+    local_head_dim: int = 0
+    local_rope_theta: float = 0.0
+    # 分组低秩输出投影（DeepSeek-V4）：宽 attention 输出先分组降维再投回
+    o_groups: int = 0               # 0 = 用普通 o_proj
+    o_lora_rank: int = 0
+    # 超长上下文推理时的 attention 温度缩放（Llama 4 Scout）
+    attn_temperature: float = 0.0   # 0 = 不缩放
 
     # ------------------------------------------------------------------ #
     def __post_init__(self) -> None:
@@ -135,7 +183,7 @@ class ModelConfig:
         types = [t.strip() for t in self.layer_types.split(",") if t.strip()]
         return [types[i % len(types)] for i in range(self.n_layers)]
 
-    _LAYER_TYPES = ("full", "window", "linear", "gdn", "mamba2")
+    _LAYER_TYPES = ("full", "window", "linear", "gdn", "mamba2", "sparse", "rwkv7", "parallel")
 
     def validate(self) -> None:
         for t in set(self.layer_type_list()):
@@ -145,6 +193,13 @@ class ModelConfig:
             raise ValueError(f"未知注意力类型: {self.attn_type}")
         if self.seq_mixer not in ("retention", "gdn", "mamba2"):
             raise ValueError(f"未知线性混合器: {self.seq_mixer}（可选 retention/gdn/mamba2）")
+        # 不 import sparse_attention（会形成循环依赖），直接用字面量
+        if "sparse" in self.layer_type_list() and self.sparse_mode not in ("dsa", "csa", "hca"):
+            raise ValueError(f"未知稀疏模式: {self.sparse_mode}（可选 dsa/csa/hca）")
+        if self.kv_share_pattern:
+            bad = {c for c in self.kv_share_pattern.lower() if c not in "pc,"}
+            if bad:
+                raise ValueError(f"kv_share_pattern 只能含 p/c/逗号，发现 {bad}")
 
 
 # --------------------------------------------------------------------------- #
@@ -187,4 +242,31 @@ PRESETS = {
     "mamba_hybrid": _preset(dim=384, n_layers=12, n_heads=8, n_kv_heads=2,
                             vocab_size=4096, layer_types="mamba2,mamba2,mamba2,full",
                             ssm_state_size=32),
+    # ---- 以下为 2026 P1/P2 架构预设 ----
+    # 稀疏检索注意力：DSA（Indexer + Top-K），每层都算索引
+    "dsa": _preset(dim=384, n_layers=8, n_heads=8, n_kv_heads=2, vocab_size=4096,
+                   layer_types="sparse", sparse_mode="dsa", sparse_topk=64,
+                   sparse_local_window=32),
+    # 压缩稀疏注意力 CSA：先压 4 倍再检索；每 4 层复用一次索引（IndexShare）
+    "csa": _preset(dim=384, n_layers=8, n_heads=8, n_kv_heads=2, vocab_size=4096,
+                   layer_types="sparse", sparse_mode="csa", sparse_topk=32,
+                   sparse_compression=4, sparse_local_window=32,
+                   sparse_index_share=4, sparse_index_skip=2),
+    # 重压缩注意力 HCA：压 64 倍后不做 Top-K，全部读取
+    "hca": _preset(dim=384, n_layers=8, n_heads=8, n_kv_heads=2, vocab_size=4096,
+                   layer_types="sparse", sparse_mode="hca", sparse_compression=64,
+                   sparse_local_window=32),
+    # RWKV-7：完全消除 KV Cache
+    "rwkv7": _preset(dim=384, n_layers=8, n_heads=8, n_kv_heads=2, vocab_size=4096,
+                     layer_types="rwkv7"),
+    # Falcon-H1 式：同层并行 Attention + Mamba-2
+    "parallel_hybrid": _preset(dim=384, n_layers=8, n_heads=8, n_kv_heads=2,
+                               vocab_size=4096, layer_types="parallel",
+                               parallel_attn_ratio=0.5, parallel_ssm="mamba2"),
+    # mHC 超连接（4 条残差流 + Sinkhorn 双随机）
+    "mhc": _preset(dim=384, n_layers=8, n_heads=8, n_kv_heads=2, vocab_size=4096,
+                   hc_mult=4, hc_sinkhorn_iters=20),
+    # KV Cache 压缩组合拳：K=V + 跨层共享（Gemma 4 思路）
+    "kv_share": _preset(dim=384, n_layers=8, n_heads=8, n_kv_heads=2, vocab_size=4096,
+                        kv_eq_v=True, kv_share_pattern="p,c,c,c"),
 }
